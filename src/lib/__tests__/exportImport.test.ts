@@ -8,6 +8,7 @@ import {
   exportPackage,
   validatePackage,
   importPackage,
+  chunkPhasesForImport,
 } from '@/lib/exportImport';
 import type {
   EditorState,
@@ -445,6 +446,107 @@ describe('[SPEC-005] importPackage()', () => {
     expect(importedQ.teclado_virtual).toEqual(
       expect.arrayContaining(['∀', '∃', '~', '∧', '∨', '→', '↔', '(', ')']),
     );
+  });
+
+  it('retorna importedPhases contendo apenas as fases recém-criadas com novos UUIDs', () => {
+    const state = makeSampleState();
+    const pkg = makeValidPackageExport();
+
+    const result = importPackage(state, pkg);
+
+    expect(result.importedPhases).toHaveLength(1);
+    expect(result.importedPhases[0].titulo).toBe('Fase Importada 1');
+    expect(result.importedPhases[0].id).toBe(result.state.phases[result.state.phases.length - 1].id);
+    expect(result.importedPhases.map((p) => p.id)).not.toContain('phase-1');
+  });
+});
+
+// ─── BLOCO 4: chunkPhasesForImport ──────────────────────────────────────────────
+
+describe('chunkPhasesForImport()', () => {
+  it('retorna lista vazia quando recebe array vazio', () => {
+    expect(chunkPhasesForImport([])).toEqual([]);
+  });
+
+  it('mantém pacote pequeno em um único lote', () => {
+    const phases: Phase[] = [
+      {
+        id: 'p1',
+        titulo: 'Fase 1',
+        icone: 'Network',
+        questoes: [makeDiagramacaoQuestion('q1'), makeFormalizacaoQuestion('q2')],
+      },
+      {
+        id: 'p2',
+        titulo: 'Fase 2',
+        icone: 'Table2',
+        questoes: [makeTabelaVerdadeQuestion('q3')],
+      },
+    ];
+
+    const chunks = chunkPhasesForImport(phases);
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]).toHaveLength(2);
+  });
+
+  it('divide pacotes com mais de 100 questões em múltiplos lotes preservando atomicidade de cada fase', () => {
+    const buildPhaseWithQuestions = (phaseId: string, count: number): Phase => ({
+      id: phaseId,
+      titulo: `Fase ${phaseId}`,
+      icone: 'Network',
+      questoes: Array.from({ length: count }, (_, idx) => makeDiagramacaoQuestion(`${phaseId}-q${idx}`)),
+    });
+
+    const phases = [
+      buildPhaseWithQuestions('p1', 45),
+      buildPhaseWithQuestions('p2', 45),
+      buildPhaseWithQuestions('p3', 45),
+    ];
+
+    const chunks = chunkPhasesForImport(phases);
+    expect(chunks).toHaveLength(2);
+    expect(chunks[0].map((p) => p.id)).toEqual(['p1', 'p2']);
+    expect(chunks[1].map((p) => p.id)).toEqual(['p3']);
+  });
+
+  it('divide lotes quando o tamanho serializado excede maxBytesPerChunk', () => {
+    const phases: Phase[] = [
+      {
+        id: 'p1',
+        titulo: 'Fase Grande 1',
+        icone: 'Network',
+        questoes: [makeDiagramacaoQuestion('q1')],
+      },
+      {
+        id: 'p2',
+        titulo: 'Fase Grande 2',
+        icone: 'Table2',
+        questoes: [makeDiagramacaoQuestion('q2')],
+      },
+    ];
+
+    const singlePhaseBytes = Buffer.byteLength(JSON.stringify({ phases: [phases[0]] }), 'utf8');
+    const chunks = chunkPhasesForImport(phases, {
+      maxQuestionsPerChunk: 100,
+      maxBytesPerChunk: singlePhaseBytes + 10,
+    });
+
+    expect(chunks).toHaveLength(2);
+    expect(chunks[0].map((p) => p.id)).toEqual(['p1']);
+    expect(chunks[1].map((p) => p.id)).toEqual(['p2']);
+  });
+
+  it('mantém uma fase única gigante intacta no seu próprio lote mesmo excedendo os limites', () => {
+    const giantPhase: Phase = {
+      id: 'giant',
+      titulo: 'Fase Gigante',
+      icone: 'Brain',
+      questoes: Array.from({ length: 120 }, (_, idx) => makeDiagramacaoQuestion(`g-q${idx}`)),
+    };
+
+    const chunks = chunkPhasesForImport([giantPhase]);
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0][0].questoes).toHaveLength(120);
   });
 });
 

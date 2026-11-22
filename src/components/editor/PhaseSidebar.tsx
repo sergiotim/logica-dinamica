@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { Phase, LucideIconName } from '@/types';
 import { ICON_MAP, ICON_OPTIONS } from '@/lib/icons';
 import { Button } from '@/components/ui/Button';
@@ -27,10 +27,12 @@ interface PhaseSidebarProps {
   selectedPhaseId: string | null;
   onSelectPhase: (phaseId: string) => void;
   onCreatePhase: (titulo: string, icone: LucideIconName) => void;
-  onUpdatePhase?: (phase: Phase) => void;
+  onUpdatePhase?: (phase: Phase, options?: { immediate?: boolean }) => void;
   onReorderPhases: (oldIndex: number, newIndex: number) => void;
   onImportPackage?: (pkg: unknown) => void;
   onExportAll?: () => void;
+  isStructuralDisabled?: boolean;
+  onModalVisibilityChange?: (isOpen: boolean) => void;
 }
 
 interface SortablePhaseItemProps {
@@ -140,6 +142,8 @@ export const PhaseSidebar: React.FC<PhaseSidebarProps> = ({
   onReorderPhases,
   onImportPackage,
   onExportAll,
+  isStructuralDisabled = false,
+  onModalVisibilityChange,
 }) => {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [newPhaseTitle, setNewPhaseTitle] = useState('');
@@ -147,12 +151,17 @@ export const PhaseSidebar: React.FC<PhaseSidebarProps> = ({
   const [isDraggingOver, setIsDraggingOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  useEffect(() => {
+    onModalVisibilityChange?.(showCreateModal);
+  }, [showCreateModal, onModalVisibilityChange]);
+
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
   );
 
   const handleDragEnd = (event: DragEndEvent) => {
+    if (isStructuralDisabled) return;
     const { active, over } = event;
     if (over && active.id !== over.id) {
       const oldIndex = phases.findIndex((p) => p.id === active.id);
@@ -209,6 +218,7 @@ export const PhaseSidebar: React.FC<PhaseSidebarProps> = ({
     e.preventDefault();
     e.stopPropagation();
     setIsDraggingOver(false);
+    if (isStructuralDisabled) return;
     const files = e.dataTransfer.files;
     if (files && files.length > 0) {
       processFile(files[0]);
@@ -265,7 +275,8 @@ export const PhaseSidebar: React.FC<PhaseSidebarProps> = ({
         <button
           type="button"
           onClick={() => setShowCreateModal(true)}
-          className="w-full py-2 px-3 rounded-lg border border-primary/40 bg-primary/15 text-primary hover:bg-primary hover:text-white text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer shadow-xs active:scale-[0.99]"
+          disabled={isStructuralDisabled}
+          className="w-full py-2 px-3 rounded-lg border border-primary/40 bg-primary/15 text-primary hover:bg-primary hover:text-white text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer shadow-xs active:scale-[0.99] disabled:opacity-40 disabled:cursor-not-allowed"
         >
           <Plus size={15} />
           <span>Nova Fase</span>
@@ -291,7 +302,8 @@ export const PhaseSidebar: React.FC<PhaseSidebarProps> = ({
               <button
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
-                className="py-1.5 px-2 rounded-lg border border-border-subtle bg-base text-text-muted hover:text-white hover:border-primary/50 text-xs font-medium flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                disabled={isStructuralDisabled}
+                className="py-1.5 px-2 rounded-lg border border-border-subtle bg-base text-text-muted hover:text-white hover:border-primary/50 text-xs font-medium flex items-center justify-center gap-1.5 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                 title="Importar pacote de fases (.json)"
                 aria-label="Importar pacote de fases"
               >
@@ -311,7 +323,8 @@ export const PhaseSidebar: React.FC<PhaseSidebarProps> = ({
             <button
               type="button"
               onClick={() => setShowCreateModal(true)}
-              className="w-full py-2 px-3 rounded-lg bg-primary text-white text-xs font-bold flex items-center justify-center gap-1.5 hover:bg-primary-hover transition-colors cursor-pointer"
+              disabled={isStructuralDisabled}
+              className="w-full py-2 px-3 rounded-lg bg-primary text-white text-xs font-bold flex items-center justify-center gap-1.5 hover:bg-primary-hover transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
             >
               <Plus size={14} className="mr-1 inline" /> Nova Fase
             </button>
@@ -336,7 +349,7 @@ export const PhaseSidebar: React.FC<PhaseSidebarProps> = ({
                     isSelected={fase.id === selectedPhaseId}
                     onSelect={() => onSelectPhase(fase.id)}
                     onToggleVisibility={() =>
-                      onUpdatePhase?.({ ...fase, oculta: !fase.oculta })
+                      onUpdatePhase?.({ ...fase, oculta: !fase.oculta }, { immediate: true })
                     }
                   />
                 ))}

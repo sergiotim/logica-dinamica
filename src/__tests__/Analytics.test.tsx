@@ -29,7 +29,6 @@ jest.mock('@/lib/storage', () => ({
 
 jest.mock('@/lib/api', () => ({
   fetchPhasesApi: jest.fn().mockResolvedValue([]),
-  savePhasesApi: jest.fn().mockResolvedValue([]),
 }));
 
 // Mock de dados analíticos para os testes do Dashboard

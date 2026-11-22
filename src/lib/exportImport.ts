@@ -210,7 +210,62 @@ export function importPackage(
 
   return {
     state: nextState,
+    importedPhases: newPhases,
     importedPhasesCount: newPhases.length,
     importedQuestionsCount: pkg.questions.length,
   };
+}
+
+function getUtf8ByteLength(str: string): number {
+  if (typeof TextEncoder !== 'undefined') {
+    return new TextEncoder().encode(str).length;
+  }
+  if (typeof Buffer !== 'undefined') {
+    return Buffer.byteLength(str, 'utf8');
+  }
+  return new Blob([str]).size;
+}
+
+/**
+ * Particiona fases importadas em lotes compatíveis com limites serverless (questões e bytes),
+ * mantendo cada fase atômica (nunca dividindo uma mesma fase entre lotes).
+ */
+export function chunkPhasesForImport(
+  phases: Phase[],
+  options?: { maxQuestionsPerChunk?: number; maxBytesPerChunk?: number }
+): Phase[][] {
+  if (phases.length === 0) return [];
+
+  const maxQuestionsPerChunk = options?.maxQuestionsPerChunk ?? 100;
+  const maxBytesPerChunk = options?.maxBytesPerChunk ?? 1_000_000;
+
+  const chunks: Phase[][] = [];
+  let currentChunk: Phase[] = [];
+  let currentQuestionCount = 0;
+
+  for (const phase of phases) {
+    const phaseQuestionCount = phase.questoes.length;
+
+    if (currentChunk.length > 0) {
+      const candidate = [...currentChunk, phase];
+      const candidateQuestions = currentQuestionCount + phaseQuestionCount;
+      const candidateBytes = getUtf8ByteLength(JSON.stringify({ phases: candidate }));
+
+      if (candidateQuestions > maxQuestionsPerChunk || candidateBytes > maxBytesPerChunk) {
+        chunks.push(currentChunk);
+        currentChunk = [phase];
+        currentQuestionCount = phaseQuestionCount;
+        continue;
+      }
+    }
+
+    currentChunk.push(phase);
+    currentQuestionCount += phaseQuestionCount;
+  }
+
+  if (currentChunk.length > 0) {
+    chunks.push(currentChunk);
+  }
+
+  return chunks;
 }

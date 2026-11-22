@@ -6,9 +6,27 @@ jest.mock('@/lib/auth', () => ({
   authOptions: {},
 }));
 
-jest.mock('@/lib/db', () => ({
-  syncSinglePhaseToDb: jest.fn(),
-}));
+jest.mock('@/lib/db', () => {
+  class PhaseNotFoundError extends Error {
+    constructor(message = 'Fase não encontrada.') {
+      super(message);
+      this.name = 'PhaseNotFoundError';
+    }
+  }
+  class LastPhaseDeletionError extends Error {
+    constructor(message = 'Deve existir pelo menos 1 fase. Não é possível excluir a última fase.') {
+      super(message);
+      this.name = 'LastPhaseDeletionError';
+    }
+  }
+  return {
+    syncSinglePhaseToDb: jest.fn(),
+    updatePhaseMetadataInDb: jest.fn(),
+    deletePhaseFromDb: jest.fn(),
+    PhaseNotFoundError,
+    LastPhaseDeletionError,
+  };
+});
 
 jest.mock('next/server', () => ({
   NextResponse: {
@@ -19,8 +37,14 @@ jest.mock('next/server', () => ({
   },
 }));
 
-import { PUT } from '@/app/api/phases/[id]/route';
-import { syncSinglePhaseToDb } from '@/lib/db';
+import { PUT, PATCH, DELETE } from '@/app/api/phases/[id]/route';
+import {
+  syncSinglePhaseToDb,
+  updatePhaseMetadataInDb,
+  deletePhaseFromDb,
+  PhaseNotFoundError,
+  LastPhaseDeletionError,
+} from '@/lib/db';
 import { getServerSession } from 'next-auth';
 
 describe('/api/phases/[id] Route Handler (PUT)', () => {
@@ -126,3 +150,156 @@ describe('/api/phases/[id] Route Handler (PUT)', () => {
   });
 });
 
+describe('/api/phases/[id] Route Handler (PATCH — Metadados)', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env.TEACHER_EMAILS = 'prof@teste.com';
+  });
+
+  it('retorna 403 se o usuário não for professor', async () => {
+    (getServerSession as jest.Mock).mockResolvedValue({
+      user: { email: 'aluno@teste.com', role: 'STUDENT' },
+    });
+
+    const mockReq = {
+      json: async () => ({ phase: { titulo: 'Fase 1', icone: 'Network' } }),
+    } as unknown as Request;
+
+    const res = await PATCH(mockReq, { params: Promise.resolve({ id: 'f-1' }) });
+    expect(res.status).toBe(403);
+    expect(updatePhaseMetadataInDb).not.toHaveBeenCalled();
+  });
+
+  it('retorna 400 se titulo ou icone forem inválidos ou se phase.id divergir da rota', async () => {
+    (getServerSession as jest.Mock).mockResolvedValue({
+      user: { email: 'prof@teste.com', role: 'TEACHER' },
+    });
+
+    const payloads = [
+      {},
+      { phase: { titulo: '   ', icone: 'Network' } },
+      { phase: { titulo: 'Ok', icone: '' } },
+      { phase: { id: 'f-outro', titulo: 'Ok', icone: 'Network' } },
+    ];
+
+    for (const payload of payloads) {
+      const mockReq = { json: async () => payload } as unknown as Request;
+      const res = await PATCH(mockReq, { params: Promise.resolve({ id: 'f-1' }) });
+      expect(res.status).toBe(400);
+    }
+
+    expect(updatePhaseMetadataInDb).not.toHaveBeenCalled();
+  });
+
+  it('atualiza metadados via updatePhaseMetadataInDb e retorna 200', async () => {
+    (getServerSession as jest.Mock).mockResolvedValue({
+      user: { email: 'prof@teste.com', role: 'TEACHER' },
+    });
+    (updatePhaseMetadataInDb as jest.Mock).mockResolvedValue(undefined);
+
+    const mockReq = {
+      json: async () => ({
+        phase: { titulo: 'Novo Título', icone: 'Brain', oculta: true },
+      }),
+    } as unknown as Request;
+
+    const res = await PATCH(mockReq, { params: Promise.resolve({ id: 'f-1' }) });
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json).toEqual({ success: true, phaseId: 'f-1' });
+    expect(updatePhaseMetadataInDb).toHaveBeenCalledWith({
+      id: 'f-1',
+      titulo: 'Novo Título',
+      icone: 'Brain',
+      oculta: true,
+    });
+  });
+
+  it('retorna 404 quando a fase não existe (PhaseNotFoundError)', async () => {
+    (getServerSession as jest.Mock).mockResolvedValue({
+      user: { email: 'prof@teste.com', role: 'TEACHER' },
+    });
+    (updatePhaseMetadataInDb as jest.Mock).mockRejectedValue(new PhaseNotFoundError());
+
+    const mockReq = {
+      json: async () => ({ phase: { titulo: 'Novo', icone: 'Network' } }),
+    } as unknown as Request;
+
+    const res = await PATCH(mockReq, { params: Promise.resolve({ id: 'f-missing' }) });
+    expect(res.status).toBe(404);
+  });
+
+  it('retorna 500 em caso de erro inesperado', async () => {
+    (getServerSession as jest.Mock).mockResolvedValue({
+      user: { email: 'prof@teste.com', role: 'TEACHER' },
+    });
+    (updatePhaseMetadataInDb as jest.Mock).mockRejectedValue(new Error('Erro no Postgres'));
+
+    const mockReq = {
+      json: async () => ({ phase: { titulo: 'Novo', icone: 'Network' } }),
+    } as unknown as Request;
+
+    const res = await PATCH(mockReq, { params: Promise.resolve({ id: 'f-1' }) });
+    expect(res.status).toBe(500);
+  });
+});
+
+describe('/api/phases/[id] Route Handler (DELETE)', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env.TEACHER_EMAILS = 'prof@teste.com';
+  });
+
+  it('retorna 403 se o usuário não for professor', async () => {
+    (getServerSession as jest.Mock).mockResolvedValue({
+      user: { email: 'aluno@teste.com', role: 'STUDENT' },
+    });
+
+    const res = await DELETE({} as Request, { params: Promise.resolve({ id: 'f-1' }) });
+    expect(res.status).toBe(403);
+    expect(deletePhaseFromDb).not.toHaveBeenCalled();
+  });
+
+  it('exclui a fase via deletePhaseFromDb e retorna 200', async () => {
+    (getServerSession as jest.Mock).mockResolvedValue({
+      user: { email: 'prof@teste.com', role: 'TEACHER' },
+    });
+    (deletePhaseFromDb as jest.Mock).mockResolvedValue({ deletedId: 'f-1', remainingCount: 2 });
+
+    const res = await DELETE({} as Request, { params: Promise.resolve({ id: 'f-1' }) });
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json).toEqual({ success: true, deletedId: 'f-1', remainingCount: 2 });
+    expect(deletePhaseFromDb).toHaveBeenCalledWith('f-1');
+  });
+
+  it('retorna 404 quando a fase já foi removida (PhaseNotFoundError)', async () => {
+    (getServerSession as jest.Mock).mockResolvedValue({
+      user: { email: 'prof@teste.com', role: 'TEACHER' },
+    });
+    (deletePhaseFromDb as jest.Mock).mockRejectedValue(new PhaseNotFoundError());
+
+    const res = await DELETE({} as Request, { params: Promise.resolve({ id: 'f-gone' }) });
+    expect(res.status).toBe(404);
+  });
+
+  it('retorna 409 ao tentar excluir a última fase restante (LastPhaseDeletionError)', async () => {
+    (getServerSession as jest.Mock).mockResolvedValue({
+      user: { email: 'prof@teste.com', role: 'TEACHER' },
+    });
+    (deletePhaseFromDb as jest.Mock).mockRejectedValue(new LastPhaseDeletionError());
+
+    const res = await DELETE({} as Request, { params: Promise.resolve({ id: 'f-last' }) });
+    expect(res.status).toBe(409);
+  });
+
+  it('retorna 500 em erro inesperado', async () => {
+    (getServerSession as jest.Mock).mockResolvedValue({
+      user: { email: 'prof@teste.com', role: 'TEACHER' },
+    });
+    (deletePhaseFromDb as jest.Mock).mockRejectedValue(new Error('Falha ao excluir'));
+
+    const res = await DELETE({} as Request, { params: Promise.resolve({ id: 'f-1' }) });
+    expect(res.status).toBe(500);
+  });
+});

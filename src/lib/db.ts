@@ -1,6 +1,39 @@
 import { prisma } from '@/lib/prisma';
-import type { Phase, Question, QuestionType, LucideIconName } from '@/types';
+import type {
+  Phase,
+  Question,
+  QuestionType,
+  LucideIconName,
+  PhaseMetadataPayload,
+  PhaseDeletionImpact,
+  ReorderPhasesResult,
+  ImportPhasesResponse,
+} from '@/types';
 import { Prisma, QuestionType as PrismaQuestionType } from '@prisma/client';
+
+/**
+ * Erros de domínio para rotas granulares de fase.
+ */
+export class PhaseNotFoundError extends Error {
+  constructor(message = 'Fase não encontrada.') {
+    super(message);
+    this.name = 'PhaseNotFoundError';
+  }
+}
+
+export class LastPhaseDeletionError extends Error {
+  constructor(message = 'Deve existir pelo menos 1 fase. Não é possível excluir a última fase.') {
+    super(message);
+    this.name = 'LastPhaseDeletionError';
+  }
+}
+
+export class DuplicatePhaseError extends Error {
+  constructor(message = 'Já existe uma fase com este identificador.') {
+    super(message);
+    this.name = 'DuplicatePhaseError';
+  }
+}
 
 /**
  * Converte o tipo do TypeScript (minúsculo) para o Enum do Prisma (MAIÚSCULO).
@@ -45,6 +78,42 @@ function resolveQuestionType(prismaType: PrismaQuestionType, content: Record<str
 }
 
 /**
+ * Codifica o ícone e a flag de visibilidade (:oculta) para persistência Zero-DDL.
+ */
+function encodePhaseIcon(icone: LucideIconName, oculta?: boolean): string {
+  return oculta ? `${icone}:oculta` : icone;
+}
+
+/**
+ * Serializa uma questão para o formato de registro do Prisma.
+ */
+function serializeQuestionForDb(question: Question, phaseId: string, order: number) {
+  const { id, tipo, topico, enunciado, ...content } = question as Question & Record<string, unknown>;
+
+  const prismaType = toPrismaQuestionType(tipo);
+  const isStandardPrismaType =
+    tipo === 'diagramacao' ||
+    tipo === 'tabela_verdade' ||
+    tipo === 'formalizacao' ||
+    tipo === 'multipla_escolha' ||
+    tipo === 'formalizacao_argumento';
+  const jsonContent = {
+    ...(content || {}),
+    ...(!isStandardPrismaType ? { originalTipo: tipo } : {}),
+  } as Prisma.InputJsonObject;
+
+  return {
+    id,
+    phaseId,
+    type: prismaType,
+    topic: topico,
+    enunciado,
+    order,
+    content: jsonContent,
+  };
+}
+
+/**
  * Busca todas as fases e questões do banco Neon, ordenadas por `order`.
  */
 export async function getPhasesFromDb(): Promise<Phase[]> {
@@ -80,100 +149,231 @@ export async function getPhasesFromDb(): Promise<Phase[]> {
 }
 
 /**
- * Sincroniza uma lista completa de fases e questões no banco Neon em transação atômica.
- * Lida com criação, edição, exclusão e reordenação (order).
+ * Cria uma única fase ao final da ordem existente sem reescrever fases ou questões.
  */
-export async function syncPhasesToDb(phases: Phase[]): Promise<void> {
-  await prisma.$transaction(
-    async (tx) => {
-      const phaseIds = phases.map((p) => p.id);
+export async function createPhaseInDb(phase: PhaseMetadataPayload): Promise<{ id: string; order: number }> {
+  try {
+    return await prisma.$transaction(
+      async (tx) => {
+        const agg = await tx.phase.aggregate({ _max: { order: true } });
+        const nextOrder = (agg._max.order ?? -1) + 1;
 
-      // 1. Se não houver fases, apaga todas as fases (e questões por cascade)
-      if (phaseIds.length === 0) {
-        await tx.phase.deleteMany({});
-        return;
-      }
-
-      // 2. Exclui fases que foram removidas pelo professor
-      await tx.phase.deleteMany({
-        where: {
-          id: { notIn: phaseIds },
-        },
-      });
-
-      // 3. Itera sobre as fases na ordem atual
-      for (let pIndex = 0; pIndex < phases.length; pIndex++) {
-        const phase = phases[pIndex];
-
-        const phaseIcon = phase.oculta ? `${phase.icone}:oculta` : phase.icone;
-
-        // Upsert da fase (atualiza título, ícone e a nova ordem)
-        await tx.phase.upsert({
-          where: { id: phase.id },
-          update: {
-            title: phase.titulo,
-            icon: phaseIcon,
-            order: pIndex,
-          },
-          create: {
+        await tx.phase.create({
+          data: {
             id: phase.id,
             title: phase.titulo,
-            icon: phaseIcon,
-            order: pIndex,
+            icon: encodePhaseIcon(phase.icone, phase.oculta),
+            order: nextOrder,
           },
         });
 
-        const questionIds = phase.questoes.map((q) => q.id);
+        return { id: phase.id, order: nextOrder };
+      },
+      {
+        maxWait: 10000,
+        timeout: 15000,
+      }
+    );
+  } catch (error: unknown) {
+    if ((error as { code?: string })?.code === 'P2002') {
+      throw new DuplicatePhaseError();
+    }
+    throw error;
+  }
+}
 
-        // Exclui questões removidas desta fase
-        if (questionIds.length === 0) {
-          await tx.question.deleteMany({
-            where: { phaseId: phase.id },
-          });
-        } else {
-          await tx.question.deleteMany({
-            where: {
-              phaseId: phase.id,
-              id: { notIn: questionIds },
-            },
-          });
+/**
+ * Atualiza apenas título, ícone e visibilidade de uma fase específica sem tocar em suas questões.
+ */
+export async function updatePhaseMetadataInDb(phase: PhaseMetadataPayload): Promise<void> {
+  try {
+    await prisma.phase.update({
+      where: { id: phase.id },
+      data: {
+        title: phase.titulo,
+        icon: encodePhaseIcon(phase.icone, phase.oculta),
+      },
+    });
+  } catch (error: unknown) {
+    if ((error as { code?: string })?.code === 'P2025') {
+      throw new PhaseNotFoundError();
+    }
+    throw error;
+  }
+}
+
+/**
+ * Consulta o impacto (questões, submissões e alunos afetados) antes da exclusão explícita de uma fase.
+ */
+export async function getPhaseDeletionImpact(phaseId: string): Promise<PhaseDeletionImpact | null> {
+  const phase = await prisma.phase.findUnique({
+    where: { id: phaseId },
+    select: {
+      id: true,
+      _count: { select: { questions: true } },
+    },
+  });
+
+  if (!phase) {
+    return null;
+  }
+
+  const [submissionsCount, groupedStudents] = await Promise.all([
+    prisma.submission.count({
+      where: { question: { phaseId } },
+    }),
+    prisma.submission.groupBy({
+      by: ['userId'],
+      where: { question: { phaseId } },
+    }),
+  ]);
+
+  return {
+    phaseId,
+    questionsCount: phase._count.questions,
+    submissionsCount,
+    studentsAffectedCount: groupedStudents.length,
+  };
+}
+
+/**
+ * Exclui exclusivamente a fase alvo (impedindo exclusão da última fase) e compacta as ordens posteriores.
+ */
+export async function deletePhaseFromDb(
+  phaseId: string
+): Promise<{ deletedId: string; remainingCount: number }> {
+  return prisma.$transaction(
+    async (tx) => {
+      const existing = await tx.phase.findUnique({
+        where: { id: phaseId },
+        select: { id: true, order: true },
+      });
+
+      if (!existing) {
+        throw new PhaseNotFoundError();
+      }
+
+      const totalPhases = await tx.phase.count();
+      if (totalPhases <= 1) {
+        throw new LastPhaseDeletionError();
+      }
+
+      await tx.phase.delete({
+        where: { id: phaseId },
+      });
+
+      await tx.phase.updateMany({
+        where: { order: { gt: existing.order } },
+        data: { order: { decrement: 1 } },
+      });
+
+      return {
+        deletedId: phaseId,
+        remainingCount: totalPhases - 1,
+      };
+    },
+    {
+      maxWait: 10000,
+      timeout: 15000,
+    }
+  );
+}
+
+/**
+ * Reordena fases fazendo merge seguro com o estado atual do banco para preservar fases concorrentes,
+ * atualizando apenas a coluna `order` em um único UPDATE SQL parametrizado.
+ */
+export async function reorderPhasesInDb(orderedIds: string[]): Promise<ReorderPhasesResult> {
+  return prisma.$transaction(
+    async (tx) => {
+      const dbPhases = await tx.phase.findMany({
+        select: { id: true, order: true },
+        orderBy: { order: 'asc' },
+      });
+
+      const currentOrderMap = new Map(dbPhases.map((p) => [p.id, p.order]));
+      const dbIdSet = new Set(dbPhases.map((p) => p.id));
+
+      const uniqueRequested: string[] = [];
+      const seenRequested = new Set<string>();
+      for (const id of orderedIds) {
+        if (!seenRequested.has(id)) {
+          seenRequested.add(id);
+          uniqueRequested.push(id);
         }
+      }
 
-        // Upsert de cada questão na ordem atual em paralelo via Promise.all
-        await Promise.all(
-          phase.questoes.map((question, qIndex) => {
-            const { id, tipo, topico, enunciado, ...content } = question as Question & Record<string, unknown>;
+      const validRequestedIds = uniqueRequested.filter((id) => dbIdSet.has(id));
+      const validSet = new Set(validRequestedIds);
+      const unseenDbIds = dbPhases.map((p) => p.id).filter((id) => !validSet.has(id));
 
-            const prismaType = toPrismaQuestionType(tipo);
-            const isStandardPrismaType = tipo === 'diagramacao' || tipo === 'tabela_verdade' || tipo === 'formalizacao' || tipo === 'multipla_escolha' || tipo === 'formalizacao_argumento';
-            const jsonContent = {
-              ...(content || {}),
-              ...(!isStandardPrismaType ? { originalTipo: tipo } : {}),
-            } as Prisma.InputJsonObject;
+      const finalOrder = [...validRequestedIds, ...unseenDbIds];
+      const hasExternalChanges =
+        unseenDbIds.length > 0 || validRequestedIds.length !== uniqueRequested.length;
 
-            return tx.question.upsert({
-              where: { id },
-              update: {
-                phaseId: phase.id,
-                type: prismaType,
-                topic: topico,
-                enunciado,
-                order: qIndex,
-                content: jsonContent,
-              },
-              create: {
-                id,
-                phaseId: phase.id,
-                type: prismaType,
-                topic: topico,
-                enunciado,
-                order: qIndex,
-                content: jsonContent,
-              },
-            });
-          })
+      const changedEntries = finalOrder
+        .map((id, idx) => ({ id, newOrder: idx }))
+        .filter(({ id, newOrder }) => currentOrderMap.get(id) !== newOrder);
+
+      if (changedEntries.length > 0) {
+        const valueTuples = changedEntries.map(
+          ({ id, newOrder }) => Prisma.sql`(${id}, ${newOrder}::int)`
+        );
+        await tx.$executeRaw(
+          Prisma.sql`UPDATE "Phase" AS p SET "order" = v.ord, "updatedAt" = NOW() FROM (VALUES ${Prisma.join(valueTuples)}) AS v(id, ord) WHERE p.id = v.id`
         );
       }
+
+      return {
+        orderedIds: finalOrder,
+        hasExternalChanges,
+      };
+    },
+    {
+      maxWait: 10000,
+      timeout: 15000,
+    }
+  );
+}
+
+/**
+ * Importa um lote de fases novas e suas questões em batch (`createMany`) ao final da ordem atual.
+ */
+export async function importPhasesToDb(phases: Phase[]): Promise<ImportPhasesResponse> {
+  if (phases.length === 0) {
+    return {
+      importedPhasesCount: 0,
+      importedQuestionsCount: 0,
+      phaseOrders: [],
+    };
+  }
+
+  return prisma.$transaction(
+    async (tx) => {
+      const agg = await tx.phase.aggregate({ _max: { order: true } });
+      const baseOrder = (agg._max.order ?? -1) + 1;
+
+      const phaseRows = phases.map((phase, idx) => ({
+        id: phase.id,
+        title: phase.titulo,
+        icon: encodePhaseIcon(phase.icone, phase.oculta),
+        order: baseOrder + idx,
+      }));
+
+      const questionRows = phases.flatMap((phase) =>
+        phase.questoes.map((q, qIndex) => serializeQuestionForDb(q, phase.id, qIndex))
+      );
+
+      await tx.phase.createMany({ data: phaseRows });
+      if (questionRows.length > 0) {
+        await tx.question.createMany({ data: questionRows });
+      }
+
+      return {
+        importedPhasesCount: phaseRows.length,
+        importedQuestionsCount: questionRows.length,
+        phaseOrders: phaseRows.map((p) => ({ id: p.id, order: p.order })),
+      };
     },
     {
       maxWait: 10000,
@@ -184,13 +384,12 @@ export async function syncPhasesToDb(phases: Phase[]): Promise<void> {
 
 /**
  * Sincroniza uma única fase ativa e suas questões no banco Neon em transação atômica.
- * Usado para operações granulares do Editor (edição de título, ícone, adição/edição/remoção de questões).
- * Evita a reescrita monolítica de todo o currículo.
+ * Usado para operações de questões do Editor até a Issue #6.
  */
 export async function syncSinglePhaseToDb(phase: Phase): Promise<void> {
   await prisma.$transaction(
     async (tx) => {
-      // 1. Busca a ordem atual da fase no banco (se já existir), ou calcula a próxima ordem disponível
+      // 1. Busca a ordem atual da fase no banco (se já existir), ou calcula após a maior ordem disponível
       const existingPhase = await tx.phase.findUnique({
         where: { id: phase.id },
         select: { order: true },
@@ -198,11 +397,11 @@ export async function syncSinglePhaseToDb(phase: Phase): Promise<void> {
 
       let phaseOrder = existingPhase?.order;
       if (phaseOrder === undefined) {
-        const count = await tx.phase.count();
-        phaseOrder = count;
+        const agg = await tx.phase.aggregate({ _max: { order: true } });
+        phaseOrder = (agg._max.order ?? -1) + 1;
       }
 
-      const phaseIcon = phase.oculta ? `${phase.icone}:oculta` : phase.icone;
+      const phaseIcon = encodePhaseIcon(phase.icone, phase.oculta);
 
       // 2. Upsert da fase (atualiza título e ícone preservando a ordem)
       await tx.phase.upsert({
@@ -238,34 +437,18 @@ export async function syncSinglePhaseToDb(phase: Phase): Promise<void> {
       // 4. Upsert de cada questão desta fase na ordem indicada via Promise.all
       await Promise.all(
         phase.questoes.map((question, qIndex) => {
-          const { id, tipo, topico, enunciado, ...content } = question as Question & Record<string, unknown>;
-
-          const prismaType = toPrismaQuestionType(tipo);
-          const isStandardPrismaType = tipo === 'diagramacao' || tipo === 'tabela_verdade' || tipo === 'formalizacao';
-          const jsonContent = {
-            ...(content || {}),
-            ...(!isStandardPrismaType ? { originalTipo: tipo } : {}),
-          } as Prisma.InputJsonObject;
-
+          const serialized = serializeQuestionForDb(question, phase.id, qIndex);
           return tx.question.upsert({
-            where: { id },
+            where: { id: serialized.id },
             update: {
-              phaseId: phase.id,
-              type: prismaType,
-              topic: topico,
-              enunciado,
-              order: qIndex,
-              content: jsonContent,
+              phaseId: serialized.phaseId,
+              type: serialized.type,
+              topic: serialized.topic,
+              enunciado: serialized.enunciado,
+              order: serialized.order,
+              content: serialized.content,
             },
-            create: {
-              id,
-              phaseId: phase.id,
-              type: prismaType,
-              topic: topico,
-              enunciado,
-              order: qIndex,
-              content: jsonContent,
-            },
+            create: serialized,
           });
         })
       );
@@ -281,7 +464,7 @@ export async function syncSinglePhaseToDb(phase: Phase): Promise<void> {
  * Busca todas as submissões de um usuário específico no banco Neon.
  */
 export async function getUserSubmissions(
-  userId: string,
+  userId: string
 ): Promise<{ questionId: string; isCorrect: boolean; answer: unknown }[]> {
   const submissions = await prisma.submission.findMany({
     where: { userId },
@@ -295,7 +478,6 @@ export async function getUserSubmissions(
 }
 
 /**
- * Registra ou atualiza a resolução de uma questão por um aluno (upsert atômico).
  * Registra a tentativa de resolução de uma questão por um aluno (gravação de histórico atômica).
  */
 export async function saveUserSubmission(data: {
@@ -314,4 +496,3 @@ export async function saveUserSubmission(data: {
     },
   });
 }
-

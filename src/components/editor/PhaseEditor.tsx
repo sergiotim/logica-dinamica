@@ -1,41 +1,61 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Phase, Question, LucideIconName } from '@/types';
+import { Phase, Question, LucideIconName, PhaseDeletionImpact } from '@/types';
 import { QuestionList } from './QuestionList';
 import { ICON_OPTIONS, ICON_MAP } from '@/lib/icons';
 import { Button } from '@/components/ui/Button';
-import { Trash2, ChevronDown, DownloadCloud } from 'lucide-react';
+import { Trash2, ChevronDown, DownloadCloud, Loader2 } from 'lucide-react';
 
 interface PhaseEditorProps {
   phase: Phase;
   totalPhasesCount: number;
-  onUpdatePhase: (updated: Phase) => void;
+  onUpdatePhase: (updated: Phase, options?: { immediate?: boolean }) => void;
+  onFlushPhaseMetadata?: () => void;
   onDeletePhase: (phaseId: string) => void;
+  onRequestPhaseImpact?: (phaseId: string) => Promise<PhaseDeletionImpact | null>;
   onAddQuestion: () => void;
   onEditQuestion: (question: Question) => void;
   onSaveQuestion?: (question: Question) => void;
   onDeleteQuestion: (questionId: string) => void;
   onReorderQuestions: (oldIndex: number, newIndex: number) => void;
   onExportPhase?: (phaseId: string) => void;
+  isStructuralDisabled?: boolean;
+  onModalVisibilityChange?: (isOpen: boolean) => void;
 }
 
 export const PhaseEditor: React.FC<PhaseEditorProps> = ({
   phase,
   totalPhasesCount = 1,
   onUpdatePhase,
+  onFlushPhaseMetadata,
   onDeletePhase,
+  onRequestPhaseImpact,
   onAddQuestion,
   onEditQuestion,
   onSaveQuestion,
   onDeleteQuestion,
   onReorderQuestions,
   onExportPhase,
+  isStructuralDisabled = false,
+  onModalVisibilityChange,
 }) => {
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [deleteWarning, setDeleteWarning] = useState<string | null>(null);
+  const [impactStatus, setImpactStatus] = useState<'idle' | 'loading' | 'loaded' | 'error'>('idle');
+  const [deletionImpact, setDeletionImpact] = useState<PhaseDeletionImpact | null>(null);
   const [showIconPicker, setShowIconPicker] = useState(false);
   const iconPickerRef = useRef<HTMLDivElement>(null);
+  const impactRequestIdRef = useRef(0);
+  const currentPhaseIdRef = useRef(phase.id);
 
   const CurrentIcon = ICON_MAP[phase.icone] || ICON_MAP.Network;
+
+  useEffect(() => {
+    currentPhaseIdRef.current = phase.id;
+  }, [phase.id]);
+
+  useEffect(() => {
+    onModalVisibilityChange?.(showDeleteModal);
+  }, [showDeleteModal, onModalVisibilityChange]);
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
@@ -53,27 +73,68 @@ export const PhaseEditor: React.FC<PhaseEditorProps> = ({
   }, [showIconPicker]);
 
   const handleTitleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    onUpdatePhase({
-      ...phase,
-      titulo: e.target.value,
-    });
+    onUpdatePhase(
+      {
+        ...phase,
+        titulo: e.target.value,
+      },
+      { immediate: false }
+    );
   };
 
   const handleIconChange = (newIcon: LucideIconName) => {
-    onUpdatePhase({
-      ...phase,
-      icone: newIcon,
-    });
+    onUpdatePhase(
+      {
+        ...phase,
+        icone: newIcon,
+      },
+      { immediate: true }
+    );
   };
 
   const handleClickDelete = () => {
+    if (isStructuralDisabled || impactStatus === 'loading') return;
+
     if (totalPhasesCount <= 1) {
       setDeleteWarning('Deve existir pelo menos 1 fase. Não é possível excluir.');
+      setImpactStatus('idle');
+      setDeletionImpact(null);
       setShowDeleteModal(true);
       return;
     }
+
     setDeleteWarning(null);
-    setShowDeleteModal(true);
+    setDeletionImpact(null);
+
+    if (onRequestPhaseImpact) {
+      const targetPhaseId = phase.id;
+      const reqId = ++impactRequestIdRef.current;
+      setImpactStatus('loading');
+
+      onRequestPhaseImpact(targetPhaseId)
+        .then((impact) => {
+          if (impactRequestIdRef.current !== reqId || currentPhaseIdRef.current !== targetPhaseId) {
+            return;
+          }
+          if (impact) {
+            setDeletionImpact(impact);
+            setImpactStatus('loaded');
+          } else {
+            setImpactStatus('error');
+          }
+          setShowDeleteModal(true);
+        })
+        .catch(() => {
+          if (impactRequestIdRef.current !== reqId || currentPhaseIdRef.current !== targetPhaseId) {
+            return;
+          }
+          setImpactStatus('error');
+          setShowDeleteModal(true);
+        });
+    } else {
+      setImpactStatus('idle');
+      setShowDeleteModal(true);
+    }
   };
 
   const handleConfirmDelete = () => {
@@ -147,6 +208,7 @@ export const PhaseEditor: React.FC<PhaseEditorProps> = ({
                 type="text"
                 value={phase.titulo}
                 onChange={handleTitleChange}
+                onBlur={() => onFlushPhaseMetadata?.()}
                 placeholder="Ex: Diagramação de Argumentos"
                 className="w-full bg-base border border-border-subtle rounded-lg px-3 py-2 text-white font-bold text-lg focus:outline-none focus:border-primary transition-colors"
               />
@@ -170,9 +232,18 @@ export const PhaseEditor: React.FC<PhaseEditorProps> = ({
               type="button"
               variant="outline"
               onClick={handleClickDelete}
-              className="text-xs px-3 py-2 text-error border-error/30 hover:bg-error/10 hover:border-error flex items-center gap-1.5"
+              disabled={isStructuralDisabled || impactStatus === 'loading'}
+              className="text-xs px-3 py-2 text-error border-error/30 hover:bg-error/10 hover:border-error flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
             >
-              <Trash2 size={15} /> Excluir Fase
+              {impactStatus === 'loading' ? (
+                <>
+                  <Loader2 size={15} className="animate-spin" /> Verificando...
+                </>
+              ) : (
+                <>
+                  <Trash2 size={15} /> Excluir Fase
+                </>
+              )}
             </Button>
           </div>
         </div>
@@ -199,7 +270,7 @@ export const PhaseEditor: React.FC<PhaseEditorProps> = ({
             <h3 className="text-lg font-bold text-white mb-2">
               {deleteWarning ? 'Atenção' : 'Excluir Fase'}
             </h3>
-            <p className="text-text-muted text-sm mb-6">
+            <p className="text-text-muted text-sm mb-4">
               {deleteWarning ? (
                 deleteWarning
               ) : (
@@ -214,7 +285,42 @@ export const PhaseEditor: React.FC<PhaseEditorProps> = ({
               )}
             </p>
 
-            <div className="flex justify-end gap-3">
+            {!deleteWarning &&
+              impactStatus === 'loaded' &&
+              deletionImpact &&
+              deletionImpact.submissionsCount > 0 && (
+                <div
+                  data-testid="phase-deletion-impact-warning"
+                  className="mb-4 rounded-lg border border-error/30 bg-error/10 px-3 py-2 text-xs text-error"
+                >
+                  Atenção: esta fase possui {deletionImpact.submissionsCount} submissão(ões) de{' '}
+                  {deletionImpact.studentsAffectedCount} aluno(s) que serão excluídas permanentemente do
+                  progresso e do Analytics.
+                </div>
+              )}
+
+            {!deleteWarning &&
+              impactStatus === 'loaded' &&
+              deletionImpact &&
+              deletionImpact.submissionsCount === 0 && (
+                <div
+                  data-testid="phase-deletion-impact-safe"
+                  className="mb-4 rounded-lg border border-border-subtle bg-base px-3 py-2 text-xs text-text-muted"
+                >
+                  Nenhuma submissão de aluno será afetada.
+                </div>
+              )}
+
+            {!deleteWarning && impactStatus === 'error' && (
+              <div
+                data-testid="phase-deletion-impact-error"
+                className="mb-4 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning"
+              >
+                Não foi possível verificar o histórico de submissões no banco.
+              </div>
+            )}
+
+            <div className="flex justify-end gap-3 mt-2">
               <Button
                 type="button"
                 variant="outline"
