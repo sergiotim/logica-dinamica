@@ -23,7 +23,7 @@ A plataforma opera em dois modos distintos por rota:
 - **Modo Editor (`/editor`):** Painel administrativo para professores criarem, editarem, excluírem e reordenarem fases e questões (com drag-and-drop duplo, motor lógico para autogeração de tabelas-verdade, andaime pedagógico e guias com preview ao vivo), persistido em `localStorage`.
 
 ### Tech Stack Principal
-- **Framework:** Next.js 16.3.4 (App Router)
+- **Framework:** Next.js 16.4.6 (App Router)
 - **Biblioteca de UI:** React 19.2.8 & React DOM 19.2.8
 - **Linguagem:** TypeScript 5
 - **Estilização:** Tailwind CSS v4 (`@tailwindcss/postcss`)
