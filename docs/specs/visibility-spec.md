@@ -89,7 +89,7 @@ export interface BaseQuestion {
 Para viabilizar o deploy contínuo e preservar a integridade entre os ambientes de banco de dados (`dev` e `prod`) sem necessidade de executar migrações DDL (`prisma db push` / `prisma migrate`):
 1. **Questões:** A propriedade `oculta` é serializada e persistida diretamente na coluna `content Json` existente da tabela `Question`.
 2. **Fases:** Como o modelo relacional `Phase` não possui coluna JSON genérica, a propriedade `oculta` é codificada de forma transparente no campo `icon String` através do sufixo `:oculta` (ex: `Network:oculta`).
-3. **Decodificação e Codificação:** As funções `getPhasesFromDb()`, `syncSinglePhaseToDb()` e `syncPhasesToDb()` no `src/lib/db.ts` tratam o sufixo `:oculta`, separando o nome do ícone `LucideIconName` e populando a propriedade booleana `oculta` em tempo de execução.
+3. **Decodificação e Codificação:** As funções `getPhasesFromDb()`, `createPhaseInDb()`, `updatePhaseMetadataInDb()`, `importPhasesToDb()` e `syncSinglePhaseToDb()` no `src/lib/db.ts` tratam o sufixo `:oculta` (via helper `encodePhaseIcon`), separando o nome do ícone `LucideIconName` e populando a propriedade booleana `oculta` em tempo de execução.
 
 ---
 

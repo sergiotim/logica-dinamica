@@ -6,10 +6,19 @@ jest.mock('@/lib/auth', () => ({
   authOptions: {},
 }));
 
-jest.mock('@/lib/db', () => ({
-  getPhasesFromDb: jest.fn(),
-  syncPhasesToDb: jest.fn(),
-}));
+jest.mock('@/lib/db', () => {
+  class DuplicatePhaseError extends Error {
+    constructor(message = 'Já existe uma fase com este identificador.') {
+      super(message);
+      this.name = 'DuplicatePhaseError';
+    }
+  }
+  return {
+    getPhasesFromDb: jest.fn(),
+    createPhaseInDb: jest.fn(),
+    DuplicatePhaseError,
+  };
+});
 
 jest.mock('next/server', () => ({
   NextResponse: {
@@ -21,7 +30,7 @@ jest.mock('next/server', () => ({
 }));
 
 import { GET, POST } from '@/app/api/phases/route';
-import { getPhasesFromDb, syncPhasesToDb } from '@/lib/db';
+import { getPhasesFromDb, createPhaseInDb, DuplicatePhaseError } from '@/lib/db';
 import { getServerSession } from 'next-auth';
 
 describe('/api/phases Route Handler', () => {
@@ -44,43 +53,100 @@ describe('/api/phases Route Handler', () => {
     });
   });
 
-  describe('POST', () => {
+  describe('POST (Criação unitária de Fase)', () => {
     it('retorna 403 se o usuário não for professor', async () => {
       (getServerSession as jest.Mock).mockResolvedValue({
         user: { email: 'aluno@teste.com', role: 'STUDENT' },
       });
 
       const mockReq = {
-        json: async () => ({ phases: [] }),
+        json: async () => ({
+          phase: { id: 'f-1', titulo: 'Nova Fase', icone: 'Table2' },
+        }),
       } as unknown as Request;
 
       const res = await POST(mockReq);
       expect(res.status).toBe(403);
       const json = await res.json();
       expect(json.error).toMatch(/Não autorizado/i);
-      expect(syncPhasesToDb).not.toHaveBeenCalled();
+      expect(createPhaseInDb).not.toHaveBeenCalled();
     });
 
-    it('permite que professor salve alterações e sincronize com o banco', async () => {
+    it('retorna 400 se o payload não contiver uma fase válida com id, titulo e icone', async () => {
       (getServerSession as jest.Mock).mockResolvedValue({
         user: { email: 'prof@teste.com', role: 'TEACHER' },
       });
-      (syncPhasesToDb as jest.Mock).mockResolvedValue(undefined);
 
-      const phases = [
-        { id: 'f-1', titulo: 'Nova Fase', icone: 'Table2', questoes: [] },
+      const invalidPayloads = [
+        {},
+        { phases: [{ id: 'f-1', titulo: 'Monolítico', icone: 'Network', questoes: [] }] },
+        { phase: { id: '', titulo: 'Sem ID', icone: 'Network' } },
+        { phase: { id: 'f-1', titulo: '   ', icone: 'Network' } },
+        { phase: { id: 'f-1', titulo: 'Sem Ícone', icone: '' } },
       ];
 
+      for (const payload of invalidPayloads) {
+        const mockReq = { json: async () => payload } as unknown as Request;
+        const res = await POST(mockReq);
+        expect(res.status).toBe(400);
+      }
+
+      expect(createPhaseInDb).not.toHaveBeenCalled();
+    });
+
+    it('cria 1 única fase via createPhaseInDb e retorna 201', async () => {
+      (getServerSession as jest.Mock).mockResolvedValue({
+        user: { email: 'prof@teste.com', role: 'TEACHER' },
+      });
+      (createPhaseInDb as jest.Mock).mockResolvedValue({ id: 'f-new', order: 4 });
+
+      const phase = { id: 'f-new', titulo: 'Nova Fase', icone: 'Table2' as const };
       const mockReq = {
-        json: async () => ({ phases }),
+        json: async () => ({ phase }),
       } as unknown as Request;
 
       const res = await POST(mockReq);
-      expect(res.status).toBe(200);
+      expect(res.status).toBe(201);
       const json = await res.json();
-      expect(json.success).toBe(true);
-      expect(json.count).toBe(1);
-      expect(syncPhasesToDb).toHaveBeenCalledWith(phases);
+      expect(json).toEqual({
+        success: true,
+        phase: { id: 'f-new', order: 4 },
+      });
+      expect(createPhaseInDb).toHaveBeenCalledWith(phase);
+    });
+
+    it('retorna 409 se já existir fase com o mesmo ID (DuplicatePhaseError)', async () => {
+      (getServerSession as jest.Mock).mockResolvedValue({
+        user: { email: 'prof@teste.com', role: 'TEACHER' },
+      });
+      (createPhaseInDb as jest.Mock).mockRejectedValue(new DuplicatePhaseError());
+
+      const mockReq = {
+        json: async () => ({
+          phase: { id: 'f-dup', titulo: 'Duplicada', icone: 'Network' },
+        }),
+      } as unknown as Request;
+
+      const res = await POST(mockReq);
+      expect(res.status).toBe(409);
+    });
+
+    it('retorna 500 se ocorrer erro inesperado ao criar fase', async () => {
+      (getServerSession as jest.Mock).mockResolvedValue({
+        user: { email: 'prof@teste.com', role: 'TEACHER' },
+      });
+      (createPhaseInDb as jest.Mock).mockRejectedValue(new Error('Falha no Neon'));
+
+      const mockReq = {
+        json: async () => ({
+          phase: { id: 'f-err', titulo: 'Fase', icone: 'Network' },
+        }),
+      } as unknown as Request;
+
+      const res = await POST(mockReq);
+      expect(res.status).toBe(500);
+      const json = await res.json();
+      expect(json.error).toBe('Falha no Neon');
     });
   });
 });

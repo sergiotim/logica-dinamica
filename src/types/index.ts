@@ -112,8 +112,36 @@ export interface PhasePackageExport {
 
 export interface ImportPackageResult {
   state: EditorState;
+  importedPhases: Phase[];
   importedPhasesCount: number;
   importedQuestionsCount: number;
+}
+
+// --- Contratos de API Granular de Fases (Issue #5) ---
+
+export interface PhaseMetadataPayload {
+  id: string;
+  titulo: string;
+  icone: LucideIconName;
+  oculta?: boolean;
+}
+
+export interface PhaseDeletionImpact {
+  phaseId: string;
+  questionsCount: number;
+  submissionsCount: number;
+  studentsAffectedCount: number;
+}
+
+export interface ReorderPhasesResult {
+  orderedIds: string[];
+  hasExternalChanges: boolean;
+}
+
+export interface ImportPhasesResponse {
+  importedPhasesCount: number;
+  importedQuestionsCount: number;
+  phaseOrders: { id: string; order: number }[];
 }
 
 // --- Tipos de Analytics do Professor (SPEC-007) ---
