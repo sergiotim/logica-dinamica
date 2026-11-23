@@ -4,6 +4,29 @@ Este arquivo documenta todas as alterações notáveis, implementações de feat
 
 O formato baseia-se no padrão da indústria para registros de alterações (Keep a Changelog).
 
+## [Unreleased]
+
+### Adicionado (Added)
+- **Sincronização Granular de Operações Estruturais e Metadados de Fases (Issue #5 / ADR-002):**
+  - `POST /api/phases` (`createPhaseInDb`): criação unitária de fase com cálculo de ordem via `_max.order + 1` (`201 Created` / `409 Conflict`).
+  - `PATCH /api/phases/[id]` (`updatePhaseMetadataInDb`): atualização exclusiva de título, ícone e visibilidade (`:oculta`) sem reescrever questões, com debounce de 500 ms e *flush* no `onBlur` para o título.
+  - `GET /api/phases/[id]/impact` (`getPhaseDeletionImpact`): consulta Zero-DDL de submissões e alunos impactados antes da exclusão de uma fase, abrindo o modal somente após o carregamento do impacto.
+  - `DELETE /api/phases/[id]` (`deletePhaseFromDb`): exclusão exclusiva por ID com trava de última fase no servidor (`409 Conflict`) e compactação de `order`.
+  - `PATCH /api/phases/reorder` (`reorderPhasesInDb`): reordenação por `{ orderedIds }` com *merge* seguro preservando fases criadas concorrentemente (`hasExternalChanges`) e 1 único `UPDATE` em lote via `$executeRaw`.
+  - `POST /api/phases/import` (`importPhasesToDb`): importação em lote via `createMany` com validação de questões base, tratamento de duplicidade (`409`), *chunking* automático no cliente (`chunkPhasesForImport`), indicador de progresso e aviso detalhado em falha parcial de lotes.
+  - Helper RBAC centralizado `isTeacherRequest()` em `src/lib/apiAuth.ts`.
+  - Resiliência no Modo Editor (`/editor`): bloqueio de ações estruturais e DnD durante hidratação inicial (`Sincronizando...`), serialização de operações em fases recém-criadas (`pendingCreatesRef`), cancelamento de `PATCH` pendente ao salvar questões via `PUT`, indicador de `Modo offline`, aviso no `onBlur` para título em branco e re-sincronização automática ao retomar foco da aba (`visibilitychange`/`focus`).
+
+### Removido (Removed)
+- **Fluxo Monolítico Destrutivo:** removidos `syncPhasesToDb` (`src/lib/db.ts`), `savePhasesApi` (`src/lib/api.ts`) e `persistState` (`src/app/editor/page.tsx`), eliminando `phase.deleteMany({ id: { notIn } })` e o risco de perda em cascata de fases/submissões em abas defasadas.
+
+### Corrigido (Fixed)
+- **Falso Positivo na Importação:** `handleImportPackage` agora exibe toast de sucesso apenas após confirmação `201 Created` de todos os lotes no banco.
+- **Colisão de `order` após exclusões:** `syncSinglePhaseToDb` passou a usar `aggregate({ _max: { order: true } })` em vez de `count()`.
+
+### Testes (Tests)
+- Suíte expandida para **30 suítes / 369 testes** com cobertura TDD completa em `db.test.ts`, `exportImport.test.ts`, `apiPhases.test.ts`, `apiPhaseId.test.ts`, `apiPhaseStructural.test.ts` e `EditorPhaseSync.test.tsx`.
+
 ## [2.9.0] - 2026-09-21 (Analytics Centrado no Estudante e Rastreio de Repetições/Erros - SPEC-007)
 
 ### Adicionado (Added)

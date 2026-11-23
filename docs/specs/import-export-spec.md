@@ -105,9 +105,10 @@ Ao importar um arquivo `.json`, o sistema adota um algoritmo defensivo para gara
    - Para cada fase no pacote, gera um novo UUID de fase.
    - Substitui o array `originalQuestionIds` pelos novos IDs gerados através do `idMap`.
    - Adiciona as novas fases à lista existente (sem sobrescrever as fases que o professor já possui).
-4. **Sincronização Dupla (Local + Neon DB):**
-   - Salva o novo estado consolidado no `localStorage` do navegador para funcionamento offline imediato.
-   - Dispara uma chamada automática assíncrona para `POST /api/phases` (`syncPhasesApi`), persistindo a nova estrutura diretamente no banco de dados Neon PostgreSQL.
+4. **Sincronização Dupla (Local + Neon DB em Lotes Granulares):**
+   - Particiona automaticamente `importedPhases` via `chunkPhasesForImport` quando o pacote ultrapassa 100 questões ou 1 MB por lote, mantendo cada fase íntegra.
+   - Envia cada lote sequencialmente para `POST /api/phases/import` (`importPhasesApi`), que insere apenas as novas fases e questões com `createMany` em transação atômica, sem tocar ou excluir fases já existentes no banco.
+   - Só atualiza o `localStorage` e exibe toast de sucesso após confirmação `201 Created` de todos os lotes no banco; em caso de falha, re-sincroniza com o banco e informa o erro ao usuário.
    - Assim que a sincronização no banco é concluída, todos os estudantes autenticados no Modo Estudo passam a ver as novas fases instantaneamente.
 5. **Feedback Visual:** Exibe toast de sucesso informando a quantidade exata de fases e questões importadas com sucesso.
 

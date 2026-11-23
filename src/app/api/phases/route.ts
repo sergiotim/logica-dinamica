@@ -1,8 +1,7 @@
 import { NextResponse } from 'next/server';
-import { getServerSession } from 'next-auth';
-import { authOptions } from '@/lib/auth';
-import { getPhasesFromDb, syncPhasesToDb } from '@/lib/db';
-import type { Phase } from '@/types';
+import { isTeacherRequest } from '@/lib/apiAuth';
+import { getPhasesFromDb, createPhaseInDb, DuplicatePhaseError } from '@/lib/db';
+import type { PhaseMetadataPayload } from '@/types';
 
 export async function GET() {
   try {
@@ -19,35 +18,45 @@ export async function GET() {
 
 export async function POST(req: Request) {
   try {
-    const session = await getServerSession(authOptions);
-
-    const isTeacher =
-      session?.user?.role === 'TEACHER' ||
-      (process.env.TEACHER_EMAILS || '')
-        .split(',')
-        .map((e) => e.trim().toLowerCase())
-        .filter(Boolean)
-        .includes((session?.user?.email || '').toLowerCase());
-
-    if (!isTeacher) {
+    if (!(await isTeacherRequest())) {
       return NextResponse.json(
         { error: 'Não autorizado. Apenas professores podem salvar alterações.' },
         { status: 403 }
       );
     }
 
-    const body = await req.json();
-    const phases = (body.phases || []) as Phase[];
+    const body = (await req.json()) as { phase?: Partial<PhaseMetadataPayload> };
+    const phase = body?.phase;
 
-    await syncPhasesToDb(phases);
+    if (
+      !phase ||
+      typeof phase.id !== 'string' ||
+      !phase.id.trim() ||
+      typeof phase.titulo !== 'string' ||
+      !phase.titulo.trim() ||
+      typeof phase.icone !== 'string' ||
+      !phase.icone.trim()
+    ) {
+      return NextResponse.json(
+        { error: 'Dados inválidos. Informe id, titulo e icone da fase.' },
+        { status: 400 }
+      );
+    }
 
-    return NextResponse.json({ success: true, count: phases.length });
+    const created = await createPhaseInDb({
+      id: phase.id,
+      titulo: phase.titulo,
+      icone: phase.icone,
+      ...(phase.oculta !== undefined ? { oculta: phase.oculta } : {}),
+    });
+
+    return NextResponse.json({ success: true, phase: created }, { status: 201 });
   } catch (error: unknown) {
-    console.error('Erro ao salvar fases no banco:', error);
-    const message = error instanceof Error ? error.message : 'Erro ao sincronizar dados com o banco';
-    return NextResponse.json(
-      { error: message },
-      { status: 500 }
-    );
+    if (error instanceof DuplicatePhaseError) {
+      return NextResponse.json({ error: error.message }, { status: 409 });
+    }
+    console.error('Erro ao criar fase no banco:', error);
+    const message = error instanceof Error ? error.message : 'Erro ao criar fase no banco';
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }

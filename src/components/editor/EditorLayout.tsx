@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Phase, Question, LucideIconName } from '@/types';
+import React, { useState, useEffect } from 'react';
+import { Phase, Question, LucideIconName, PhaseDeletionImpact } from '@/types';
 import { PhaseSidebar } from './PhaseSidebar';
 import { PhaseEditor } from './PhaseEditor';
 import { QuestionFormModal } from './QuestionFormModal';
@@ -9,8 +9,10 @@ interface EditorLayoutProps {
   selectedPhaseId: string | null;
   onSelectPhase: (phaseId: string) => void;
   onCreatePhase: (titulo: string, icone: LucideIconName) => void;
-  onUpdatePhase: (phase: Phase) => void;
+  onUpdatePhase: (phase: Phase, options?: { immediate?: boolean }) => void;
+  onFlushPhaseMetadata?: () => void;
   onDeletePhase: (phaseId: string) => void;
+  onRequestPhaseImpact?: (phaseId: string) => Promise<PhaseDeletionImpact | null>;
   onSaveQuestion: (phaseId: string, question: Question) => void;
   onDeleteQuestion: (phaseId: string, questionId: string) => void;
   onReorderPhases: (oldIndex: number, newIndex: number) => void;
@@ -18,6 +20,8 @@ interface EditorLayoutProps {
   onImportPackage?: (pkg: unknown) => void;
   onExportPhase?: (phaseId: string) => void;
   onExportAll?: () => void;
+  isStructuralDisabled?: boolean;
+  onModalVisibilityChange?: (isOpen: boolean) => void;
 }
 
 export const EditorLayout: React.FC<EditorLayoutProps> = ({
@@ -26,7 +30,9 @@ export const EditorLayout: React.FC<EditorLayoutProps> = ({
   onSelectPhase,
   onCreatePhase,
   onUpdatePhase,
+  onFlushPhaseMetadata,
   onDeletePhase,
+  onRequestPhaseImpact,
   onSaveQuestion,
   onDeleteQuestion,
   onReorderPhases,
@@ -34,11 +40,19 @@ export const EditorLayout: React.FC<EditorLayoutProps> = ({
   onImportPackage,
   onExportPhase,
   onExportAll,
+  isStructuralDisabled = false,
+  onModalVisibilityChange,
 }) => {
   const [modalQuestion, setModalQuestion] = useState<Question | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
+  const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
 
   const selectedPhase = phases.find((p) => p.id === selectedPhaseId) || null;
+
+  useEffect(() => {
+    onModalVisibilityChange?.(isModalOpen || isCreateModalOpen || isDeleteModalOpen);
+  }, [isModalOpen, isCreateModalOpen, isDeleteModalOpen, onModalVisibilityChange]);
 
   const handleOpenNewQuestion = () => {
     setModalQuestion(null);
@@ -74,6 +88,8 @@ export const EditorLayout: React.FC<EditorLayoutProps> = ({
         onReorderPhases={onReorderPhases}
         onImportPackage={onImportPackage}
         onExportAll={onExportAll}
+        isStructuralDisabled={isStructuralDisabled}
+        onModalVisibilityChange={setIsCreateModalOpen}
       />
 
       {/* Conteúdo Principal do Editor */}
@@ -81,10 +97,13 @@ export const EditorLayout: React.FC<EditorLayoutProps> = ({
         <div className="max-w-4xl mx-auto">
           {selectedPhase ? (
             <PhaseEditor
+              key={selectedPhase.id}
               phase={selectedPhase}
               totalPhasesCount={phases.length}
               onUpdatePhase={onUpdatePhase}
+              onFlushPhaseMetadata={onFlushPhaseMetadata}
               onDeletePhase={onDeletePhase}
+              onRequestPhaseImpact={onRequestPhaseImpact}
               onAddQuestion={handleOpenNewQuestion}
               onEditQuestion={handleOpenEditQuestion}
               onSaveQuestion={(q) => onSaveQuestion(selectedPhase.id, q)}
@@ -93,6 +112,8 @@ export const EditorLayout: React.FC<EditorLayoutProps> = ({
                 onReorderQuestions(selectedPhase.id, oldIdx, newIdx)
               }
               onExportPhase={onExportPhase}
+              isStructuralDisabled={isStructuralDisabled}
+              onModalVisibilityChange={setIsDeleteModalOpen}
             />
           ) : phases.length > 0 ? (
             <div className="text-center py-16 bg-surface border border-border-subtle rounded-xl p-8">
@@ -123,4 +144,3 @@ export const EditorLayout: React.FC<EditorLayoutProps> = ({
     </div>
   );
 };
-

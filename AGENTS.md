@@ -64,7 +64,8 @@ forms/
 │       ├── analytics-spec.md    # [SPEC-007] Dashboard de Análises do Professor (Analytics)
 │       ├── visibility-spec.md   # [SPEC-008] Visibilidade de Fases e Questões
 │       ├── content-analytics-spec.md # [SPEC-009] Analytics de Conteúdo, Dificuldade e Diagnóstico Pedagógico
-│       └── analytics-pagination-spec.md # [SPEC-010] Otimização de Performance, Paginação e Lazy Loading no Analytics
+│       ├── analytics-pagination-spec.md # [SPEC-010] Otimização de Performance, Paginação e Lazy Loading no Analytics
+│       └── adr-002-granular-phase-structural-sync.md # [ADR-002] Sincronização Granular de Operações Estruturais de Fases (Issue #5)
 ├── prisma/                      # Schema do Prisma ORM e migrações do PostgreSQL Neon
 │   └── schema.prisma            # Modelos User, Account, Session, Phase, Question, Submission
 ├── src/
@@ -75,6 +76,9 @@ forms/
 │   │   ├── submissionErrorTracking.test.tsx # Testes de integração de rastreio de erros e tentativas
 │   │   ├── Login.test.tsx       # Testes da página de login e redirecionamento NextAuth
 │   │   ├── apiPhases.test.ts    # Testes dos endpoints de API de fases (GET/POST)
+│   │   ├── apiPhaseId.test.ts   # Testes dos endpoints /api/phases/[id] (PUT/PATCH/DELETE)
+│   │   ├── apiPhaseStructural.test.ts # Testes dos endpoints /impact, /reorder e /import
+│   │   ├── EditorPhaseSync.test.tsx # Testes de integração da sincronização granular de fases (Issue #5)
 │   │   ├── apiSubmissions.test.ts # Testes dos endpoints de API de submissões (GET/POST)
 │   │   └── proxy.test.ts        # Testes do proxy de proteção de rotas
 │   ├── app/                     # Next.js App Router
@@ -114,6 +118,7 @@ forms/
 │   │   └── questions.ts         # Banco estático inicial / fallback de seed (bancoDeQuestoes)
 │   ├── lib/                     # Camada lógica, utilitária e serviços
 │   │   ├── auth.ts              # Configuração e callbacks do NextAuth
+│   │   ├── apiAuth.ts           # Helper RBAC centralizado para Route Handlers de docentes
 │   │   ├── prisma.ts            # Instância singleton do PrismaClient
 │   │   ├── db.ts                # Camada de persistência relacional no Neon Postgres
 │   │   ├── api.ts               # Cliente fetch de integração para fases e submissões

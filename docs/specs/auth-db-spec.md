@@ -54,7 +54,7 @@ O sistema define duas roles no enum do Prisma: `STUDENT` e `TEACHER`.
 - **Mecanismo de Atribuição no Login:** No callback `signIn` e `session` do NextAuth, se o e-mail do usuário constar na lista configurada, a role é imediatamente promovida para `TEACHER` no banco de dados e refletida no token de sessão.
 - **Permissões:**
   - Acesso total ao Modo Editor (`/editor`).
-  - Criar, editar, reordenar e excluir fases e questões com persistência remota no Neon DB via `POST /api/phases`.
+  - Criar, editar, reordenar, importar e excluir fases e questões com persistência remota granular no Neon DB via `/api/phases/*` (`POST /api/phases`, `PATCH /api/phases/[id]`, `GET /api/phases/[id]/impact`, `DELETE /api/phases/[id]`, `PATCH /api/phases/reorder`, `POST /api/phases/import` e `PUT /api/phases/[id]`).
   - Exportar fases individuais ou todas as fases em pacote JSON único ("Exportar Tudo").
   - Importar pacotes JSON com sincronização atômica imediata para o banco de dados.
 
@@ -199,11 +199,25 @@ model Submission {
   - Se o banco estiver vazio, aciona a carga inicial (*seed*) a partir de `src/data/questions.ts`.
 - **`POST /api/phases`:**
   - Exclusivo para docentes (`role: TEACHER`).
-  - Recebe o array completo de fases e sincroniza atomicamente com o PostgreSQL, inserindo/atualizando fases e questões com integridade e executando limpeza de entidades removidas (usado para criação/exclusão de fases, reordenação global e importação em lote).
+  - Cria uma única fase (`{ phase: { id, titulo, icone, oculta? } }`) ao final da ordem (`_max.order + 1`) via `createPhaseInDb`, retornando `201 Created`.
+- **`PATCH /api/phases/[id]`:**
+  - Exclusivo para docentes (`role: TEACHER`).
+  - Atualiza apenas metadados da fase (`titulo`, `icone`, `oculta`) via `updatePhaseMetadataInDb`, sem reescrever questões.
+- **`GET /api/phases/[id]/impact`:**
+  - Exclusivo para docentes (`role: TEACHER`).
+  - Retorna contagens de questões, submissões e alunos afetados antes da exclusão explícita da fase (`getPhaseDeletionImpact`).
+- **`DELETE /api/phases/[id]`:**
+  - Exclusivo para docentes (`role: TEACHER`).
+  - Exclui exclusivamente a fase alvo via `deletePhaseFromDb` (bloqueando exclusão da última fase com `409 Conflict`) e compacta a ordem das fases subsequentes.
+- **`PATCH /api/phases/reorder`:**
+  - Exclusivo para docentes (`role: TEACHER`).
+  - Recebe `{ orderedIds: string[] }`, aplica *merge* seguro preservando fases criadas externamente por outros professores (`hasExternalChanges`) e atualiza apenas a coluna `order` em lote via `reorderPhasesInDb`.
+- **`POST /api/phases/import`:**
+  - Exclusivo para docentes (`role: TEACHER`).
+  - Recebe `{ phases: Phase[] }` contendo apenas as fases recém-importadas e persiste em lote via `createMany` (`importPhasesToDb`), sem apagar fases existentes.
 - **`PUT /api/phases/[id]`:**
   - Exclusivo para docentes (`role: TEACHER`).
-  - Recebe os dados de uma única fase ativa (`{ phase: Phase }`) e sincroniza atomicamente apenas a fase e suas questões associadas via `syncSinglePhaseToDb`.
-  - Reduz em mais de 75% o tráfego de rede e a latência de salvamento nas operações rotineiras do Modo Editor.
+  - Recebe os dados de uma única fase ativa (`{ phase: Phase }`) e sincroniza atomicamente a fase e suas questões associadas via `syncSinglePhaseToDb` (operações de questões até a Issue #6).
 
 ### 6.2. Driver de Conexão Neon Serverless (@prisma/adapter-neon)
 - O Prisma Client utiliza o `@prisma/adapter-neon` em conjunto com `@neondatabase/serverless` e `ws`.

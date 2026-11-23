@@ -31,6 +31,8 @@ PrismaClientKnownRequestError [P2028]: Transaction not found
 - **Integração no Editor:** Operações cotidianas (`handleUpdatePhase`, `handleSaveQuestion`, `handleDeleteQuestion`, `handleReorderQuestions`) passam a invocar `saveSinglePhaseApi(phase)`, reduzindo o tráfego de rede e o tempo de transação em mais de 75%.
 - **Manutenção da Rota Global:** `POST /api/phases` permanece exclusivamente para reordenação global de fases, criação/remoção de fases completas e importação em lote de pacotes JSON.
 
+> **Evolução (Issue #5):** A rota monolítica `POST /api/phases` (`syncPhasesToDb`) foi posteriormente substituída por endpoints REST granulares e não-destrutivos para todas as operações estruturais e metadados de fase. Consulte o [ADR-002](./adr-002-granular-phase-structural-sync.md).
+
 ### 2. Adoção do Neon Serverless Driver Adapter (`@prisma/adapter-neon`)
 - **Dependências Integradas:** `@neondatabase/serverless`, `@prisma/adapter-neon` e `ws`.
 - **Configuração do Prisma:** No `src/lib/prisma.ts`, o Prisma Client é instanciado com o driver adapter `PrismaNeon` conectado a uma `Pool` do Neon configurada com WebSockets (`neonConfig.webSocketConstructor = ws`).
