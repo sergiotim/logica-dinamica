@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/prisma';
+import { isPreviewUserEmail } from '@/lib/previewAuth';
 import type {
   GlobalAnalyticsData,
   PhaseAnalytics,
@@ -119,9 +120,12 @@ export async function getPhaseAnalytics(phaseId: string): Promise<PhaseAnalytics
 }
 
 export async function getAnalyticsOverview(): Promise<GlobalAnalyticsData> {
-  const students = await prisma.user.findMany({
+  const rawStudents = await prisma.user.findMany({
     where: { role: 'STUDENT' },
   });
+  const students = rawStudents.filter(
+    (s) => !isPreviewUserEmail((s as { email?: string | null }).email)
+  );
 
   const totalStudents = students.length;
   const studentIds = new Set(students.map((s) => s.id));
@@ -209,7 +213,7 @@ export async function getAnalyticsOverview(): Promise<GlobalAnalyticsData> {
  * [NÃO IMPLEMENTADO - FASE VERMELHA TDD]
  */
 export async function getStudentAnalyticsOverview(): Promise<StudentAnalyticsOverviewData> {
-  const students = await prisma.user.findMany({
+  const rawStudents = await prisma.user.findMany({
     where: { role: 'STUDENT' },
     select: {
       id: true,
@@ -219,6 +223,7 @@ export async function getStudentAnalyticsOverview(): Promise<StudentAnalyticsOve
     },
     orderBy: { name: 'asc' },
   });
+  const students = rawStudents.filter((s) => !isPreviewUserEmail(s.email));
 
   const studentIds = students.map((s) => s.id);
 
