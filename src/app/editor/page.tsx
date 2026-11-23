@@ -69,6 +69,7 @@ export default function EditorPage() {
     phase: PhaseMetadataPayload;
     timer: ReturnType<typeof setTimeout>;
   } | null>(null);
+  const pendingCreatesRef = useRef<Map<string, Promise<boolean>>>(new Map());
 
   useEffect(() => {
     editorStateRef.current = editorState;
@@ -213,9 +214,20 @@ export default function EditorPage() {
     };
   }, [applyServerPhases]);
 
+  const waitForPendingCreate = useCallback(async (phaseId: string): Promise<boolean> => {
+    const pendingCreate = pendingCreatesRef.current.get(phaseId);
+    if (!pendingCreate) return true;
+    return pendingCreate;
+  }, []);
+
   const sendMetadataToServer = useCallback(
     async (payload: PhaseMetadataPayload) => {
       if (syncStatusRef.current === 'offline') return;
+      const createdOk = await waitForPendingCreate(payload.id);
+      if (!createdOk || !editorStateRef.current?.phases.some((p) => p.id === payload.id)) {
+        return;
+      }
+
       try {
         setIsSaving(true);
         await updatePhaseMetadataApi(payload);
@@ -244,7 +256,7 @@ export default function EditorPage() {
         setIsSaving(false);
       }
     },
-    [applyServerPhases]
+    [applyServerPhases, waitForPendingCreate]
   );
 
   const flushPendingMetadata = useCallback(() => {
@@ -256,6 +268,18 @@ export default function EditorPage() {
     void sendMetadataToServer(pending.phase);
   }, [sendMetadataToServer]);
 
+  const handleFlushMetadataOnBlur = useCallback(() => {
+    flushPendingMetadata();
+    const activeId = selectedPhaseIdRef.current;
+    const activePhase = editorStateRef.current?.phases.find((p) => p.id === activeId);
+    if (activePhase && !activePhase.titulo.trim()) {
+      setFeedback({
+        type: 'warning',
+        message: 'O título da fase não pode ficar em branco para sincronizar com o banco.',
+      });
+    }
+  }, [flushPendingMetadata]);
+
   useEffect(() => {
     return () => {
       flushPendingMetadata();
@@ -263,10 +287,20 @@ export default function EditorPage() {
   }, [flushPendingMetadata]);
 
   const persistSinglePhase = async (updatedState: EditorState, phase: Phase) => {
+    if (pendingMetadataRef.current?.phase.id === phase.id) {
+      clearTimeout(pendingMetadataRef.current.timer);
+      pendingMetadataRef.current = null;
+    }
+
     editorStateRef.current = updatedState;
     setEditorState(updatedState);
     saveEditorState(updatedState);
     if (syncStatusRef.current === 'offline') return;
+
+    const createdOk = await waitForPendingCreate(phase.id);
+    if (!createdOk || !editorStateRef.current?.phases.some((p) => p.id === phase.id)) {
+      return;
+    }
 
     try {
       setIsSaving(true);
@@ -313,25 +347,46 @@ export default function EditorPage() {
 
     if (syncStatusRef.current === 'offline') return;
 
-    try {
-      setIsSaving(true);
-      await createPhaseApi({
-        id: newPhase.id,
-        titulo: newPhase.titulo,
-        icone: newPhase.icone,
-      });
-      lastSyncAtRef.current = Date.now();
-    } catch (err: unknown) {
-      editorStateRef.current = previousState;
-      setEditorState(previousState);
-      saveEditorState(previousState);
-      selectedPhaseIdRef.current = previousSelectedId;
-      setSelectedPhaseId(previousSelectedId);
-      const msg = err instanceof Error ? err.message : 'Erro ao criar fase no banco.';
-      setFeedback({ type: 'error', message: msg });
-    } finally {
-      setIsSaving(false);
-    }
+    const createPromise = (async (): Promise<boolean> => {
+      try {
+        setIsSaving(true);
+        await createPhaseApi({
+          id: newPhase.id,
+          titulo: newPhase.titulo,
+          icone: newPhase.icone,
+        });
+        lastSyncAtRef.current = Date.now();
+        return true;
+      } catch (err: unknown) {
+        const latestState = editorStateRef.current;
+        if (latestState) {
+          const rolledBack: EditorState = {
+            ...latestState,
+            phases: latestState.phases.filter((p) => p.id !== newPhase.id),
+          };
+          editorStateRef.current = rolledBack;
+          setEditorState(rolledBack);
+          saveEditorState(rolledBack);
+          if (selectedPhaseIdRef.current === newPhase.id) {
+            const nextId =
+              previousSelectedId && rolledBack.phases.some((p) => p.id === previousSelectedId)
+                ? previousSelectedId
+                : rolledBack.phases[0]?.id ?? null;
+            selectedPhaseIdRef.current = nextId;
+            setSelectedPhaseId(nextId);
+          }
+        }
+        const msg = err instanceof Error ? err.message : 'Erro ao criar fase no banco.';
+        setFeedback({ type: 'error', message: msg });
+        return false;
+      } finally {
+        pendingCreatesRef.current.delete(newPhase.id);
+        setIsSaving(false);
+      }
+    })();
+
+    pendingCreatesRef.current.set(newPhase.id, createPromise);
+    await createPromise;
   };
 
   const handleUpdatePhase = (phase: Phase, options?: { immediate?: boolean }) => {
@@ -409,6 +464,9 @@ export default function EditorPage() {
     }
 
     if (syncStatusRef.current === 'offline') return;
+
+    const createdOk = await waitForPendingCreate(phaseId);
+    if (!createdOk) return;
 
     try {
       setIsSaving(true);
@@ -643,6 +701,8 @@ export default function EditorPage() {
         message: `${result.importedPhasesCount} fase(s) e ${result.importedQuestionsCount} questão(ões) importada(s) e salvas no banco com sucesso!`,
       });
     } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Erro ao importar pacote.';
+
       if (completedPhases > 0) {
         try {
           const freshPhases = await fetchPhasesApi();
@@ -654,13 +714,15 @@ export default function EditorPage() {
           selectedPhaseIdRef.current = previousSelectedId;
           setSelectedPhaseId(previousSelectedId);
         }
+        setFeedback({
+          type: 'error',
+          message: `Falha parcial na importação: ${completedPhases} fase(s) já haviam sido salvas e a lista foi atualizada. (${msg})`,
+        });
       } else {
         selectedPhaseIdRef.current = previousSelectedId;
         setSelectedPhaseId(previousSelectedId);
+        setFeedback({ type: 'error', message: msg });
       }
-
-      const msg = err instanceof Error ? err.message : 'Erro ao importar pacote.';
-      setFeedback({ type: 'error', message: msg });
     } finally {
       importProgressRef.current = null;
       setImportProgress(null);
@@ -752,7 +814,7 @@ export default function EditorPage() {
         onSelectPhase={handleSelectPhase}
         onCreatePhase={handleCreatePhase}
         onUpdatePhase={handleUpdatePhase}
-        onFlushPhaseMetadata={flushPendingMetadata}
+        onFlushPhaseMetadata={handleFlushMetadataOnBlur}
         onDeletePhase={handleDeletePhase}
         onRequestPhaseImpact={syncStatus !== 'offline' ? handleRequestPhaseImpact : undefined}
         onSaveQuestion={handleSaveQuestion}

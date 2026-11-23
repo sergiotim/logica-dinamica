@@ -6,11 +6,20 @@ jest.mock('@/lib/auth', () => ({
   authOptions: {},
 }));
 
-jest.mock('@/lib/db', () => ({
-  getPhaseDeletionImpact: jest.fn(),
-  reorderPhasesInDb: jest.fn(),
-  importPhasesToDb: jest.fn(),
-}));
+jest.mock('@/lib/db', () => {
+  class DuplicatePhaseError extends Error {
+    constructor(message = 'Já existe uma fase com este identificador.') {
+      super(message);
+      this.name = 'DuplicatePhaseError';
+    }
+  }
+  return {
+    getPhaseDeletionImpact: jest.fn(),
+    reorderPhasesInDb: jest.fn(),
+    importPhasesToDb: jest.fn(),
+    DuplicatePhaseError,
+  };
+});
 
 jest.mock('next/server', () => ({
   NextResponse: {
@@ -24,7 +33,7 @@ jest.mock('next/server', () => ({
 import { GET as getImpact } from '@/app/api/phases/[id]/impact/route';
 import { PATCH as patchReorder } from '@/app/api/phases/reorder/route';
 import { POST as postImport } from '@/app/api/phases/import/route';
-import { getPhaseDeletionImpact, reorderPhasesInDb, importPhasesToDb } from '@/lib/db';
+import { getPhaseDeletionImpact, reorderPhasesInDb, importPhasesToDb, DuplicatePhaseError } from '@/lib/db';
 import { getServerSession } from 'next-auth';
 
 describe('Rotas estruturais de Fases (/impact, /reorder, /import)', () => {
@@ -207,6 +216,40 @@ describe('Rotas estruturais de Fases (/impact, /reorder, /import)', () => {
         phaseOrders: [{ id: 'imp-1', order: 5 }],
       });
       expect(importPhasesToDb).toHaveBeenCalledWith(phases);
+    });
+
+    it('retorna 400 se alguma questão dentro da fase não tiver id, tipo, topico ou enunciado válidos', async () => {
+      (getServerSession as jest.Mock).mockResolvedValue({
+        user: { email: 'prof@teste.com', role: 'TEACHER' },
+      });
+
+      const invalidQuestionBodies = [
+        { phases: [{ id: 'p1', titulo: 'P1', icone: 'Network', questoes: [null] }] },
+        { phases: [{ id: 'p1', titulo: 'P1', icone: 'Network', questoes: [{ id: '', tipo: 'diagramacao', topico: 'T', enunciado: 'E' }] }] },
+        { phases: [{ id: 'p1', titulo: 'P1', icone: 'Network', questoes: [{ id: 'q1', tipo: '', topico: 'T', enunciado: 'E' }] }] },
+        { phases: [{ id: 'p1', titulo: 'P1', icone: 'Network', questoes: [{ id: 'q1', tipo: 'diagramacao', topico: 123, enunciado: 'E' }] }] },
+        { phases: [{ id: 'p1', titulo: 'P1', icone: 'Network', questoes: [{ id: 'q1', tipo: 'diagramacao', topico: 'T', enunciado: null }] }] },
+      ];
+
+      for (const body of invalidQuestionBodies) {
+        const mockReq = { json: async () => body } as unknown as Request;
+        const res = await postImport(mockReq);
+        expect(res.status).toBe(400);
+      }
+
+      expect(importPhasesToDb).not.toHaveBeenCalled();
+    });
+
+    it('retorna 409 quando importPhasesToDb lança DuplicatePhaseError', async () => {
+      (getServerSession as jest.Mock).mockResolvedValue({
+        user: { email: 'prof@teste.com', role: 'TEACHER' },
+      });
+      (importPhasesToDb as jest.Mock).mockRejectedValue(new DuplicatePhaseError());
+
+      const phases = [{ id: 'imp-dup', titulo: 'Importada', icone: 'Brain', questoes: [] }];
+      const mockReq = { json: async () => ({ phases }) } as unknown as Request;
+      const res = await postImport(mockReq);
+      expect(res.status).toBe(409);
     });
 
     it('retorna 500 se importPhasesToDb falhar', async () => {

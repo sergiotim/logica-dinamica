@@ -1,7 +1,20 @@
 import { NextResponse } from 'next/server';
 import { isTeacherRequest } from '@/lib/apiAuth';
-import { importPhasesToDb } from '@/lib/db';
-import type { Phase } from '@/types';
+import { importPhasesToDb, DuplicatePhaseError } from '@/lib/db';
+import type { Phase, Question } from '@/types';
+
+function isValidImportQuestion(item: unknown): item is Question {
+  if (!item || typeof item !== 'object') return false;
+  const q = item as Partial<Question>;
+  return (
+    typeof q.id === 'string' &&
+    q.id.trim().length > 0 &&
+    typeof q.tipo === 'string' &&
+    q.tipo.trim().length > 0 &&
+    typeof q.topico === 'string' &&
+    typeof q.enunciado === 'string'
+  );
+}
 
 function isValidImportPhase(item: unknown): item is Phase {
   if (!item || typeof item !== 'object') return false;
@@ -13,7 +26,8 @@ function isValidImportPhase(item: unknown): item is Phase {
     p.titulo.trim().length > 0 &&
     typeof p.icone === 'string' &&
     p.icone.trim().length > 0 &&
-    Array.isArray(p.questoes)
+    Array.isArray(p.questoes) &&
+    p.questoes.every(isValidImportQuestion)
   );
 }
 
@@ -39,6 +53,9 @@ export async function POST(req: Request) {
     const result = await importPhasesToDb(phases);
     return NextResponse.json({ success: true, ...result }, { status: 201 });
   } catch (error: unknown) {
+    if (error instanceof DuplicatePhaseError) {
+      return NextResponse.json({ error: error.message }, { status: 409 });
+    }
     console.error('Erro ao importar fases no banco:', error);
     const message = error instanceof Error ? error.message : 'Erro ao importar fases no banco';
     return NextResponse.json({ error: message }, { status: 500 });

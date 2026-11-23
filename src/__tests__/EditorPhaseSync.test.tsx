@@ -180,9 +180,12 @@ jest.mock('@/lib/prisma', () => {
         dbState.queryLog.push({ model: 'phase', action: 'deleteMany' });
         return { count: 0 };
       }),
-      upsert: jest.fn(async () => {
-        dbState.queryLog.push({ model: 'phase', action: 'upsert' });
-        return {};
+      upsert: jest.fn(async (args: { where: { id: string }; create: DbPhaseRow; update: Partial<DbPhaseRow> }) => {
+        dbState.queryLog.push({ model: 'phase', action: 'upsert', detail: args.where.id });
+        const existing = dbState.phases.get(args.where.id);
+        const next = existing ? { ...existing, ...args.update } : { ...args.create };
+        dbState.phases.set(args.where.id, next);
+        return next;
       }),
     },
     question: {
@@ -350,13 +353,19 @@ interface CapturedRequest {
 let capturedRequests: CapturedRequest[] = [];
 let getPhasesGate: Promise<void> | null = null;
 let getImpactGate: Promise<void> | null = null;
+let postPhaseGate: Promise<void> | null = null;
 let forceImportFailure = false;
+let failImportOnCall: number | null = null;
+let importCallCount = 0;
 
 function setupFetchBridge() {
   capturedRequests = [];
   getPhasesGate = null;
   getImpactGate = null;
+  postPhaseGate = null;
   forceImportFailure = false;
+  failImportOnCall = null;
+  importCallCount = 0;
 
   global.fetch = jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === 'string' ? input : input.toString();
@@ -375,6 +384,9 @@ function setupFetchBridge() {
     }
 
     if (url === '/api/phases' && method === 'POST') {
+      if (postPhaseGate) {
+        await postPhaseGate;
+      }
       return (await postPhasesRoute({ json: async () => bodyJson } as unknown as Request)) as unknown as Response;
     }
 
@@ -383,7 +395,8 @@ function setupFetchBridge() {
     }
 
     if (url === '/api/phases/import' && method === 'POST') {
-      if (forceImportFailure) {
+      importCallCount += 1;
+      if (forceImportFailure || (failImportOnCall !== null && importCallCount === failImportOnCall)) {
         return {
           status: 500,
           ok: false,
@@ -948,5 +961,230 @@ describe('[Issue #5 — Solução C] Sincronização Granular de Fases no Modo E
       const sidebar = screen.getByTestId('phase-sidebar');
       expect(within(sidebar).getByText('Fase 3 Externa')).toBeInTheDocument();
     });
+  });
+
+  it('Test 8 (Bug 1 — Troca de fase durante /impact): reseta botão "Verificando..." e cancela modal obsoleto', async () => {
+    const phases = buildCurriculum(2, 1);
+    seedDbWithPhases(phases);
+    (loadEditorState as jest.Mock).mockReturnValue({
+      version: 1,
+      updatedAt: '2026-11-21T20:00:00.000Z',
+      phases: JSON.parse(JSON.stringify(phases)),
+    } satisfies EditorState);
+
+    render(<EditorPage />);
+    await waitFor(() => {
+      expect(screen.getByText(/^Sincronizado$/i)).toBeInTheDocument();
+    });
+
+    let releaseImpact!: () => void;
+    getImpactGate = new Promise<void>((resolve) => {
+      releaseImpact = resolve;
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /Excluir Fase/i }));
+    expect(screen.getByRole('button', { name: /Verificando\.\.\./i })).toBeDisabled();
+
+    // Troca para Módulo 2 antes do /impact da Módulo 1 retornar
+    const sidebar = screen.getByTestId('phase-sidebar');
+    fireEvent.click(within(sidebar).getByText('Módulo 2'));
+
+    // Botão da nova fase NÃO deve permanecer travado em "Verificando..."
+    const deleteBtn = screen.getByRole('button', { name: /Excluir Fase/i });
+    expect(deleteBtn).toBeEnabled();
+
+    await act(async () => {
+      releaseImpact();
+    });
+
+    // Modal da fase antiga NÃO deve abrir sobre a nova fase
+    expect(screen.queryByText(/Tem certeza que deseja excluir a fase/i)).not.toBeInTheDocument();
+  });
+
+  it('Test 9 (Bug 2 — Corrida criação otimista vs PATCH imediato): PATCH aguarda POST da nova fase concluir sem gerar 404', async () => {
+    const phases = buildCurriculum(1, 1);
+    seedDbWithPhases(phases);
+    (loadEditorState as jest.Mock).mockReturnValue({
+      version: 1,
+      updatedAt: '2026-11-21T20:00:00.000Z',
+      phases: JSON.parse(JSON.stringify(phases)),
+    } satisfies EditorState);
+
+    render(<EditorPage />);
+    await waitFor(() => {
+      expect(screen.getByText(/^Sincronizado$/i)).toBeInTheDocument();
+    });
+
+    let releasePost!: () => void;
+    postPhaseGate = new Promise<void>((resolve) => {
+      releasePost = resolve;
+    });
+    capturedRequests = [];
+
+    fireEvent.click(screen.getByRole('button', { name: /Nova Fase/i }));
+    const nomeInput = await screen.findByPlaceholderText(/Nome da fase/i);
+    await userEvent.type(nomeInput, 'Fase Corrida');
+    fireEvent.click(screen.getByRole('button', { name: /^Criar$/i }));
+
+    // Enquanto POST ainda está pendente, alterna visibilidade da fase recém-criada
+    const sidebar = screen.getByTestId('phase-sidebar');
+    expect(within(sidebar).getByText('Fase Corrida')).toBeInTheDocument();
+    const toggleBtns = within(sidebar).getAllByRole('button', { name: /Alternar visibilidade/i });
+    fireEvent.click(toggleBtns[1]);
+
+    // PATCH NÃO deve disparar antes do POST concluir
+    expect(capturedRequests.filter((r) => r.method === 'PATCH')).toHaveLength(0);
+
+    await act(async () => {
+      releasePost();
+    });
+
+    await waitFor(() => {
+      expect(capturedRequests.filter((r) => r.method === 'PATCH')).toHaveLength(1);
+    });
+
+    // Sem falso 404, a fase permanece visível na sidebar e oculta no banco
+    expect(within(sidebar).getByText('Fase Corrida')).toBeInTheDocument();
+    expect(screen.queryByText(/excluída em outra sessão/i)).not.toBeInTheDocument();
+    const createdDbPhase = Array.from(dbState.phases.values()).find((p) => p.title === 'Fase Corrida');
+    expect(createdDbPhase?.icon).toBe('Network:oculta');
+  });
+
+  it('Test 10 (Bug 3 — PUT cancela PATCH debounced pendente): reordenar/editar questão não dispara PATCH redundante após PUT', async () => {
+    const phases = buildCurriculum(1, 2);
+    seedDbWithPhases(phases);
+    (loadEditorState as jest.Mock).mockReturnValue({
+      version: 1,
+      updatedAt: '2026-11-21T20:00:00.000Z',
+      phases: JSON.parse(JSON.stringify(phases)),
+    } satisfies EditorState);
+
+    render(<EditorPage />);
+    await waitFor(() => {
+      expect(screen.getByText(/^Sincronizado$/i)).toBeInTheDocument();
+    });
+
+    capturedRequests = [];
+    const titleInput = screen.getByDisplayValue('Módulo 1');
+
+    jest.useFakeTimers();
+    act(() => {
+      fireEvent.change(titleInput, { target: { value: 'Módulo 1 Via PUT' } });
+    });
+
+    // Antes do debounce de 500ms vencer, altera visibilidade de uma questão (dispara PUT /api/phases/phase-1)
+    fireEvent.click(screen.getAllByTitle(/Ocultar questão/i)[0]);
+
+    act(() => {
+      jest.advanceTimersByTime(600);
+    });
+    jest.useRealTimers();
+
+    await waitFor(() => {
+      expect(capturedRequests.filter((r) => r.method === 'PUT' && r.url === '/api/phases/phase-1')).toHaveLength(1);
+    });
+
+    expect(capturedRequests.filter((r) => r.method === 'PATCH')).toHaveLength(0);
+    expect(dbState.phases.get('phase-1')?.title).toBe('Módulo 1 Via PUT');
+  });
+
+  it('Test 11 (Bug 4 — Falha parcial na importação multi-lote): informa quantas fases já foram salvas antes da falha', async () => {
+    const phases = buildCurriculum(1, 1);
+    seedDbWithPhases(phases);
+    (loadEditorState as jest.Mock).mockReturnValue({
+      version: 1,
+      updatedAt: '2026-11-21T20:00:00.000Z',
+      phases: JSON.parse(JSON.stringify(phases)),
+    } satisfies EditorState);
+
+    render(<EditorPage />);
+    await waitFor(() => {
+      expect(screen.getByText(/^Sincronizado$/i)).toBeInTheDocument();
+    });
+
+    failImportOnCall = 2; // Lote 1 (2 fases) salva; Lote 2 (1 fase) falha
+    const largePhases = Array.from({ length: 3 }, (_, pIdx) => ({
+      titulo: `Lote Parcial ${pIdx + 1}`,
+      icone: 'Brain',
+      originalQuestionIds: Array.from({ length: 45 }, (_, qIdx) => `part-${pIdx}-${qIdx}`),
+    }));
+    const largeQuestions = largePhases.flatMap((p) =>
+      p.originalQuestionIds.map((origId, qIdx) => ({
+        ...makeQuestion(origId, qIdx + 1),
+        originalId: origId,
+      }))
+    );
+
+    const fileInput = screen.getByLabelText(/Selecionar arquivo JSON para importar/i);
+    fireEvent.change(fileInput, {
+      target: {
+        files: [
+          new File(
+            [
+              JSON.stringify({
+                metadata: {
+                  version: 1,
+                  type: 'logica-dinamica:package_export',
+                  exportedAt: '2026-11-23T15:00:00.000Z',
+                },
+                phases: largePhases,
+                questions: largeQuestions,
+              }),
+            ],
+            'partial-fail.json',
+            { type: 'application/json' }
+          ),
+        ],
+      },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText(/2 fase\(s\) já haviam sido salvas/i)).toBeInTheDocument();
+    });
+
+    const sidebar = screen.getByTestId('phase-sidebar');
+    expect(within(sidebar).getByText('Lote Parcial 1')).toBeInTheDocument();
+    expect(within(sidebar).getByText('Lote Parcial 2')).toBeInTheDocument();
+    expect(within(sidebar).queryByText('Lote Parcial 3')).not.toBeInTheDocument();
+  });
+
+  it('Test 12 (Melhorias menores — dragOver bloqueado + aviso título em branco no blur)', async () => {
+    const phases = buildCurriculum(1, 1);
+    seedDbWithPhases(phases);
+    (loadEditorState as jest.Mock).mockReturnValue({
+      version: 1,
+      updatedAt: '2026-11-21T20:00:00.000Z',
+      phases: JSON.parse(JSON.stringify(phases)),
+    } satisfies EditorState);
+
+    let releaseGate!: () => void;
+    getPhasesGate = new Promise<void>((resolve) => {
+      releaseGate = resolve;
+    });
+
+    render(<EditorPage />);
+
+    // Durante hidratação inicial, dragOver de arquivo não exibe overlay de drop
+    fireEvent.dragOver(screen.getByTestId('phase-sidebar'), {
+      dataTransfer: { types: ['Files'] },
+    });
+    expect(screen.queryByText(/Solte o arquivo \.json aqui/i)).not.toBeInTheDocument();
+
+    await act(async () => {
+      releaseGate();
+    });
+    await waitFor(() => {
+      expect(screen.getByText(/^Sincronizado$/i)).toBeInTheDocument();
+    });
+
+    capturedRequests = [];
+    const titleInput = screen.getByDisplayValue('Módulo 1');
+    fireEvent.change(titleInput, { target: { value: '   ' } });
+    fireEvent.blur(titleInput);
+
+    await waitFor(() => {
+      expect(screen.getByText(/título da fase não pode ficar em branco/i)).toBeInTheDocument();
+    });
+    expect(capturedRequests.filter((r) => r.method === 'PATCH')).toHaveLength(0);
   });
 });

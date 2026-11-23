@@ -46,8 +46,16 @@ export const PhaseEditor: React.FC<PhaseEditorProps> = ({
   const iconPickerRef = useRef<HTMLDivElement>(null);
   const impactRequestIdRef = useRef(0);
   const currentPhaseIdRef = useRef(phase.id);
+  const isMountedRef = useRef(true);
 
   const CurrentIcon = ICON_MAP[phase.icone] || ICON_MAP.Network;
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     currentPhaseIdRef.current = phase.id;
@@ -113,7 +121,11 @@ export const PhaseEditor: React.FC<PhaseEditorProps> = ({
 
       onRequestPhaseImpact(targetPhaseId)
         .then((impact) => {
-          if (impactRequestIdRef.current !== reqId || currentPhaseIdRef.current !== targetPhaseId) {
+          if (
+            !isMountedRef.current ||
+            impactRequestIdRef.current !== reqId ||
+            currentPhaseIdRef.current !== targetPhaseId
+          ) {
             return;
           }
           if (impact) {
@@ -125,7 +137,11 @@ export const PhaseEditor: React.FC<PhaseEditorProps> = ({
           setShowDeleteModal(true);
         })
         .catch(() => {
-          if (impactRequestIdRef.current !== reqId || currentPhaseIdRef.current !== targetPhaseId) {
+          if (
+            !isMountedRef.current ||
+            impactRequestIdRef.current !== reqId ||
+            currentPhaseIdRef.current !== targetPhaseId
+          ) {
             return;
           }
           setImpactStatus('error');

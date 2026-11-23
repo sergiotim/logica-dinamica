@@ -317,7 +317,7 @@ export async function reorderPhasesInDb(orderedIds: string[]): Promise<ReorderPh
 
       if (changedEntries.length > 0) {
         const valueTuples = changedEntries.map(
-          ({ id, newOrder }) => Prisma.sql`(${id}, ${newOrder}::int)`
+          ({ id, newOrder }) => Prisma.sql`(${id}::text, ${newOrder}::int)`
         );
         await tx.$executeRaw(
           Prisma.sql`UPDATE "Phase" AS p SET "order" = v.ord, "updatedAt" = NOW() FROM (VALUES ${Prisma.join(valueTuples)}) AS v(id, ord) WHERE p.id = v.id`
@@ -348,38 +348,45 @@ export async function importPhasesToDb(phases: Phase[]): Promise<ImportPhasesRes
     };
   }
 
-  return prisma.$transaction(
-    async (tx) => {
-      const agg = await tx.phase.aggregate({ _max: { order: true } });
-      const baseOrder = (agg._max.order ?? -1) + 1;
+  try {
+    return await prisma.$transaction(
+      async (tx) => {
+        const agg = await tx.phase.aggregate({ _max: { order: true } });
+        const baseOrder = (agg._max.order ?? -1) + 1;
 
-      const phaseRows = phases.map((phase, idx) => ({
-        id: phase.id,
-        title: phase.titulo,
-        icon: encodePhaseIcon(phase.icone, phase.oculta),
-        order: baseOrder + idx,
-      }));
+        const phaseRows = phases.map((phase, idx) => ({
+          id: phase.id,
+          title: phase.titulo,
+          icon: encodePhaseIcon(phase.icone, phase.oculta),
+          order: baseOrder + idx,
+        }));
 
-      const questionRows = phases.flatMap((phase) =>
-        phase.questoes.map((q, qIndex) => serializeQuestionForDb(q, phase.id, qIndex))
-      );
+        const questionRows = phases.flatMap((phase) =>
+          phase.questoes.map((q, qIndex) => serializeQuestionForDb(q, phase.id, qIndex))
+        );
 
-      await tx.phase.createMany({ data: phaseRows });
-      if (questionRows.length > 0) {
-        await tx.question.createMany({ data: questionRows });
+        await tx.phase.createMany({ data: phaseRows });
+        if (questionRows.length > 0) {
+          await tx.question.createMany({ data: questionRows });
+        }
+
+        return {
+          importedPhasesCount: phaseRows.length,
+          importedQuestionsCount: questionRows.length,
+          phaseOrders: phaseRows.map((p) => ({ id: p.id, order: p.order })),
+        };
+      },
+      {
+        maxWait: 10000,
+        timeout: 30000,
       }
-
-      return {
-        importedPhasesCount: phaseRows.length,
-        importedQuestionsCount: questionRows.length,
-        phaseOrders: phaseRows.map((p) => ({ id: p.id, order: p.order })),
-      };
-    },
-    {
-      maxWait: 10000,
-      timeout: 30000,
+    );
+  } catch (error: unknown) {
+    if ((error as { code?: string })?.code === 'P2002') {
+      throw new DuplicatePhaseError();
     }
-  );
+    throw error;
+  }
 }
 
 /**

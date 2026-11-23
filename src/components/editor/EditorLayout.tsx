@@ -97,6 +97,7 @@ export const EditorLayout: React.FC<EditorLayoutProps> = ({
         <div className="max-w-4xl mx-auto">
           {selectedPhase ? (
             <PhaseEditor
+              key={selectedPhase.id}
               phase={selectedPhase}
               totalPhasesCount={phases.length}
               onUpdatePhase={onUpdatePhase}

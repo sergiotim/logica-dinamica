@@ -39,11 +39,19 @@ interface SortablePhaseItemProps {
   fase: Phase;
   index: number;
   isSelected: boolean;
+  isStructuralDisabled?: boolean;
   onSelect: () => void;
   onToggleVisibility?: () => void;
 }
 
-function SortablePhaseItem({ fase, index, isSelected, onSelect, onToggleVisibility }: SortablePhaseItemProps) {
+function SortablePhaseItem({
+  fase,
+  index,
+  isSelected,
+  isStructuralDisabled = false,
+  onSelect,
+  onToggleVisibility,
+}: SortablePhaseItemProps) {
   const {
     attributes,
     listeners,
@@ -51,7 +59,7 @@ function SortablePhaseItem({ fase, index, isSelected, onSelect, onToggleVisibili
     transform,
     transition,
     isDragging,
-  } = useSortable({ id: fase.id });
+  } = useSortable({ id: fase.id, disabled: isStructuralDisabled });
 
   const style: React.CSSProperties = {
     transform: CSS.Transform.toString(transform),
@@ -80,7 +88,11 @@ function SortablePhaseItem({ fase, index, isSelected, onSelect, onToggleVisibili
       <div
         {...attributes}
         {...listeners}
-        className="touch-none cursor-grab active:cursor-grabbing p-1 text-text-muted/60 hover:text-white rounded transition-colors shrink-0"
+        className={`touch-none p-1 text-text-muted/60 rounded transition-colors shrink-0 ${
+          isStructuralDisabled
+            ? 'opacity-40 cursor-not-allowed'
+            : 'cursor-grab active:cursor-grabbing hover:text-white'
+        }`}
         title="Arraste para reordenar a fase"
         aria-label={`Reordenar fase ${fase.titulo}`}
       >
@@ -203,6 +215,7 @@ export const PhaseSidebar: React.FC<PhaseSidebarProps> = ({
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
+    if (isStructuralDisabled) return;
     if (e.dataTransfer.types.includes('Files')) {
       setIsDraggingOver(true);
     }
@@ -347,6 +360,7 @@ export const PhaseSidebar: React.FC<PhaseSidebarProps> = ({
                     fase={fase}
                     index={idx}
                     isSelected={fase.id === selectedPhaseId}
+                    isStructuralDisabled={isStructuralDisabled}
                     onSelect={() => onSelectPhase(fase.id)}
                     onToggleVisibility={() =>
                       onUpdatePhase?.({ ...fase, oculta: !fase.oculta }, { immediate: true })

@@ -332,6 +332,7 @@ describe('db.ts (Neon PostgreSQL Service)', () => {
       expect(mockTx.$executeRaw).toHaveBeenCalledTimes(1);
       const rawArg = mockTx.$executeRaw.mock.calls[0][0];
       expect(rawArg.values).toEqual(['p2', 0, 'p1', 1]);
+      expect(rawArg.strings.join('?')).toMatch(/::text.*::int/);
     });
 
     it('ignora IDs removidos por outro professor, sinaliza hasExternalChanges e deduplica entrada', async () => {
@@ -522,6 +523,24 @@ describe('db.ts (Neon PostgreSQL Service)', () => {
         importedQuestionsCount: 0,
         phaseOrders: [{ id: 'imp-empty', order: 0 }],
       });
+    });
+
+    it('lança DuplicatePhaseError quando Prisma retorna P2002 na importação', async () => {
+      const mockTx = {
+        phase: {
+          aggregate: jest.fn().mockResolvedValue({ _max: { order: 0 } }),
+          createMany: jest.fn().mockRejectedValue({ code: 'P2002' }),
+        },
+        question: {
+          createMany: jest.fn(),
+        },
+      };
+
+      (prisma.$transaction as jest.Mock).mockImplementation(async (callback) => callback(mockTx));
+
+      await expect(
+        importPhasesToDb([{ id: 'dup-id', titulo: 'Duplicada', icone: 'Network', questoes: [] }])
+      ).rejects.toThrow(DuplicatePhaseError);
     });
   });
 
